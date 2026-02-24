@@ -223,11 +223,9 @@ class MemoryRetriever:
 
     def index_file(self, provider: str) -> Path:
         slug = self.provider_slug(provider)
-        if self._index_backend.name == "json":
-            return self.index_dir / f"vectors_{slug}.json"
         if self._index_backend.name == "sqlite":
             return self.index_dir / "vectors.sqlite3"
-        return self.index_dir / f"vectors_{slug}.faiss"
+        return self.index_dir / f"vectors_{slug}.json"
 
     @property
     def active_backend(self) -> str:
@@ -328,9 +326,13 @@ class MemoryRetriever:
         return items, provider
 
     @staticmethod
-    def lexical_similarity(query: str, text: str, tokenize: Any) -> float:
-        q = tokenize(query)
-        t = tokenize(text)
+    def _tokenize(value: str) -> set[str]:
+        return {t for t in re.findall(r"[a-zA-Z0-9_\-]+", value.lower()) if len(t) > 1}
+
+    @classmethod
+    def lexical_similarity(cls, query: str, text: str) -> float:
+        q = cls._tokenize(query)
+        t = cls._tokenize(text)
         if not q or not t:
             return 0.0
         common = len(q & t)
@@ -355,7 +357,6 @@ class MemoryRetriever:
         top_k: int = 6,
         recency_half_life_days: float = 30.0,
         embedding_provider: str | None = None,
-        tokenize: Any,
     ) -> list[dict[str, Any]]:
         events = self.read_events()
         if not events:
@@ -375,7 +376,7 @@ class MemoryRetriever:
             summary = str(event.get("summary", ""))
             entities = " ".join(self.to_str_list(event.get("entities")))
             text = f"{summary} {entities}".strip()
-            lex = self.lexical_similarity(query, text, tokenize) if query.strip() else 0.0
+            lex = self.lexical_similarity(query, text) if query.strip() else 0.0
             event_vec = vectors_by_id.get(str(event.get("id", "")))
             sem = cosine_similarity(query_vec, event_vec) if (query_vec and event_vec) else 0.0
             rec = self.recency_score(str(event.get("timestamp", "")), recency_half_life_days)
@@ -695,33 +696,6 @@ class MemoryStore:
             "last_updated": self._utc_now_iso(),
         }
 
-    @staticmethod
-    def _provider_slug(provider: str) -> str:
-        return MemoryRetriever.provider_slug(provider)
-
-    def _get_embedder(self, embedding_provider: str | None = None) -> MemoryEmbedder:
-        return self.retriever.get_embedder(embedding_provider)
-
-    def _index_file(self, provider: str) -> Path:
-        return self.retriever.index_file(provider)
-
-    def _event_text(self, event: dict[str, Any]) -> str:
-        return self.retriever.event_text(event)
-
-    def _load_vector_index(self, provider: str) -> dict[str, Any]:
-        return self.retriever.load_vector_index(provider)
-
-    def _save_vector_index(self, provider: str, index_data: dict[str, Any]) -> None:
-        self.retriever.save_vector_index(provider, index_data)
-
-    def _ensure_event_embeddings(
-        self,
-        events: list[dict[str, Any]],
-        *,
-        embedding_provider: str | None = None,
-    ) -> tuple[dict[str, list[float]], str]:
-        return self.retriever.ensure_event_embeddings(events, embedding_provider=embedding_provider)
-
     def _record_metric(self, key: str, delta: int = 1) -> None:
         self._record_metrics({key: delta})
 
@@ -940,13 +914,13 @@ class MemoryStore:
         return event_copy
 
     def _event_similarity(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[float, float]:
-        left_text = self._event_text(left)
-        right_text = self._event_text(right)
-        lexical = self._lexical_similarity(left_text, right_text)
+        left_text = self.retriever.event_text(left)
+        right_text = self.retriever.event_text(right)
+        lexical = self.retriever.lexical_similarity(left_text, right_text)
 
         semantic = 0.0
         try:
-            vectors = self._get_embedder(self.embedding_provider).embed_texts([left_text, right_text])
+            vectors = self.retriever.get_embedder(self.embedding_provider).embed_texts([left_text, right_text])
             if len(vectors) == 2:
                 semantic = cosine_similarity(vectors[0], vectors[1])
         except Exception:
@@ -1071,7 +1045,7 @@ class MemoryStore:
             self.retriever.rebuild_event_embeddings(existing_events, embedding_provider=self.embedding_provider)
             self._record_metric("event_dedup_merges", merged)
         elif written > 0:
-            self._ensure_event_embeddings(appended_events, embedding_provider=self.embedding_provider)
+            self.retriever.ensure_event_embeddings(appended_events, embedding_provider=self.embedding_provider)
         return written
 
     def read_profile(self) -> dict[str, Any]:
@@ -1326,12 +1300,6 @@ class MemoryStore:
             "ttl_days": ttl_days,
         }
 
-    def _lexical_similarity(self, query: str, text: str) -> float:
-        return self.retriever.lexical_similarity(query, text, self._tokenize)
-
-    def _recency_score(self, timestamp: str, half_life_days: float) -> float:
-        return self.retriever.recency_score(timestamp, half_life_days)
-
     def retrieve(
         self,
         query: str,
@@ -1345,7 +1313,6 @@ class MemoryStore:
             top_k=top_k,
             recency_half_life_days=recency_half_life_days,
             embedding_provider=embedding_provider,
-            tokenize=self._tokenize,
         )
 
     def _profile_section_lines(self, profile: dict[str, Any], max_items_per_section: int = 6) -> list[str]:
@@ -1460,55 +1427,12 @@ class MemoryStore:
 
         est_tokens = max(1, len(text) // 4) if text else 0
         metrics = self._load_metrics()
-        max_tokens_seen = max(int(metrics.get("memory_context_tokens_max", 0)), est_tokens)
-        self._record_metrics(
-            {
-                "memory_context_calls": 1,
-                "memory_context_tokens_total": est_tokens,
-            }
-        )
-        if max_tokens_seen > int(metrics.get("memory_context_tokens_max", 0)):
-            refreshed = self._load_metrics()
-            refreshed["memory_context_tokens_max"] = max_tokens_seen
-            refreshed["last_updated"] = self._utc_now_iso()
-            self.persistence.write_json(self.metrics_file, refreshed)
+        metrics["memory_context_calls"] = int(metrics.get("memory_context_calls", 0)) + 1
+        metrics["memory_context_tokens_total"] = int(metrics.get("memory_context_tokens_total", 0)) + est_tokens
+        metrics["memory_context_tokens_max"] = max(int(metrics.get("memory_context_tokens_max", 0)), est_tokens)
+        metrics["last_updated"] = self._utc_now_iso()
+        self.persistence.write_json(self.metrics_file, metrics)
         return text
-
-    def _default_profile_updates(self) -> dict[str, list[str]]:
-        return self.extractor.default_profile_updates()
-
-    def _count_user_corrections(self, messages: list[dict[str, Any]]) -> int:
-        return self.extractor.count_user_corrections(messages)
-
-    def _parse_tool_args(self, args: Any) -> dict[str, Any] | None:
-        return self.extractor.parse_tool_args(args)
-
-    def _heuristic_extract_events(
-        self,
-        old_messages: list[dict[str, Any]],
-        *,
-        source_start: int,
-    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-        return self.extractor.heuristic_extract_events(old_messages, source_start=source_start)
-
-    async def _extract_structured_memory(
-        self,
-        provider: LLMProvider,
-        model: str,
-        current_profile: dict[str, Any],
-        lines: list[str],
-        old_messages: list[dict[str, Any]],
-        *,
-        source_start: int,
-    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-        return await self.extractor.extract_structured_memory(
-            provider,
-            model,
-            current_profile,
-            lines,
-            old_messages,
-            source_start=source_start,
-        )
 
     def _conflict_pair(self, old_value: str, new_value: str) -> bool:
         old_n = self._norm_text(old_value)
@@ -1743,7 +1667,7 @@ class MemoryStore:
 
     def _record_consolidation_input_metrics(self, old_messages: list[dict[str, Any]]) -> None:
         user_messages = [m for m in old_messages if str(m.get("role", "")).lower() == "user"]
-        user_corrections = self._count_user_corrections(old_messages)
+        user_corrections = self.extractor.count_user_corrections(old_messages)
         self._record_metrics(
             {
                 "messages_processed": len(old_messages),
@@ -1762,50 +1686,6 @@ class MemoryStore:
                 update = json.dumps(update, ensure_ascii=False)
             if update != current_memory:
                 self.write_long_term(update)
-
-    async def _apply_hybrid_consolidation(
-        self,
-        *,
-        provider: LLMProvider,
-        model: str,
-        lines: list[str],
-        old_messages: list[dict[str, Any]],
-        source_start: int,
-        retrieval_k: int,
-        token_budget: int,
-        recency_half_life_days: float,
-        enable_contradiction_check: bool,
-        embedding_provider: str | None,
-    ) -> None:
-        profile = self.read_profile()
-        events, profile_updates = await self._extract_structured_memory(
-            provider,
-            model,
-            profile,
-            lines,
-            old_messages,
-            source_start=source_start,
-        )
-        events_written = self.append_events(events)
-        profile_added, _, profile_touched = self._apply_profile_updates(
-            profile,
-            profile_updates,
-            enable_contradiction_check=enable_contradiction_check,
-        )
-        if events_written > 0 or profile_added > 0 or profile_touched > 0:
-            profile["last_verified_at"] = self._utc_now_iso()
-            self.write_profile(profile)
-            self._record_metric("events_extracted", events_written)
-
-        self.rebuild_memory_snapshot(write=True)
-        _ = self.get_memory_context(
-            mode="hybrid",
-            query="",
-            retrieval_k=retrieval_k,
-            token_budget=token_budget,
-            recency_half_life_days=recency_half_life_days,
-            embedding_provider=embedding_provider,
-        )
 
     def _finalize_consolidation(self, session: Session, *, archive_all: bool, keep_count: int) -> None:
         session.last_consolidated = 0 if archive_all else len(session.messages) - keep_count
@@ -1826,11 +1706,7 @@ class MemoryStore:
         archive_all: bool = False,
         memory_window: int = 50,
         memory_mode: str = "legacy",
-        retrieval_k: int = 6,
-        token_budget: int = 900,
-        recency_half_life_days: float = 30.0,
         enable_contradiction_check: bool = True,
-        embedding_provider: str | None = None,
     ) -> bool:
         """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
 
@@ -1866,7 +1742,7 @@ class MemoryStore:
                 logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
                 return False
 
-            args = self._parse_tool_args(response.tool_calls[0].arguments)
+            args = self.extractor.parse_tool_args(response.tool_calls[0].arguments)
             if not args:
                 logger.warning("Memory consolidation: unexpected arguments type {}", type(args).__name__)
                 return False
@@ -1874,18 +1750,27 @@ class MemoryStore:
             self._apply_save_memory_tool_result(args=args, current_memory=current_memory)
 
             if memory_mode == "hybrid":
-                await self._apply_hybrid_consolidation(
-                    provider=provider,
-                    model=model,
-                    lines=lines,
-                    old_messages=old_messages,
+                profile = self.read_profile()
+                events, profile_updates = await self.extractor.extract_structured_memory(
+                    provider,
+                    model,
+                    profile,
+                    lines,
+                    old_messages,
                     source_start=source_start,
-                    retrieval_k=retrieval_k,
-                    token_budget=token_budget,
-                    recency_half_life_days=recency_half_life_days,
-                    enable_contradiction_check=enable_contradiction_check,
-                    embedding_provider=embedding_provider,
                 )
+                events_written = self.append_events(events)
+                profile_added, _, profile_touched = self._apply_profile_updates(
+                    profile,
+                    profile_updates,
+                    enable_contradiction_check=enable_contradiction_check,
+                )
+                if events_written > 0 or profile_added > 0 or profile_touched > 0:
+                    profile["last_verified_at"] = self._utc_now_iso()
+                    self.write_profile(profile)
+                    self._record_metric("events_extracted", events_written)
+
+                self.rebuild_memory_snapshot(write=True)
 
             self._finalize_consolidation(
                 session,

@@ -171,7 +171,7 @@ class JsonVectorIndexBackend(VectorIndexBackend):
 
 
 class SqliteVectorIndexBackend(VectorIndexBackend):
-    """SQLite vector index backend (portable fallback for sqlite-vss mode)."""
+    """SQLite vector index backend."""
 
     name = "sqlite"
 
@@ -223,84 +223,12 @@ class SqliteVectorIndexBackend(VectorIndexBackend):
             conn.commit()
 
 
-class FaissVectorIndexBackend(VectorIndexBackend):
-    """FAISS vector index backend (optional dependency)."""
-
-    name = "faiss"
-
-    def __init__(self, index_dir: Path):
-        self.index_dir = index_dir
-
-    @staticmethod
-    def provider_slug(provider: str) -> str:
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "_", provider.strip().lower())
-        return slug or "hash"
-
-    def _index_path(self, provider: str) -> Path:
-        return self.index_dir / f"vectors_{self.provider_slug(provider)}.faiss"
-
-    def _meta_path(self, provider: str) -> Path:
-        return self.index_dir / f"vectors_{self.provider_slug(provider)}_meta.json"
-
-    def load_items(self, provider: str) -> dict[str, list[float]]:
-        try:
-            faiss = __import__("faiss")  # type: ignore
-            np = __import__("numpy")
-        except Exception:
-            return {}
-
-        index_path = self._index_path(provider)
-        meta_path = self._meta_path(provider)
-        if not index_path.exists() or not meta_path.exists():
-            return {}
-
-        try:
-            ids_payload = json.loads(meta_path.read_text(encoding="utf-8"))
-            ids = ids_payload.get("ids") if isinstance(ids_payload, dict) else None
-            if not isinstance(ids, list):
-                return {}
-            ids = [str(x) for x in ids]
-
-            index = faiss.read_index(str(index_path))
-            count = index.ntotal
-            if count <= 0:
-                return {}
-            vectors = np.vstack([index.reconstruct(i) for i in range(count)])
-            out: dict[str, list[float]] = {}
-            for event_id, row in zip(ids, vectors.tolist(), strict=False):
-                out[event_id] = [float(v) for v in row]
-            return out
-        except Exception:
-            logger.warning("Failed to read FAISS index for provider '{}', treating as empty", provider)
-            return {}
-
-    def save_items(self, provider: str, items: dict[str, list[float]], dim: int) -> None:
-        try:
-            faiss = __import__("faiss")  # type: ignore
-            np = __import__("numpy")
-        except Exception:
-            return
-
-        ids = list(items.keys())
-        index_path = self._index_path(provider)
-        meta_path = self._meta_path(provider)
-
-        if not ids or dim <= 0:
-            if index_path.exists():
-                index_path.unlink()
-            if meta_path.exists():
-                meta_path.unlink()
-            return
-
-        matrix = np.array([items[event_id] for event_id in ids], dtype="float32")
-        index = faiss.IndexFlatIP(dim)
-        index.add(matrix)
-        faiss.write_index(index, str(index_path))
-        meta_path.write_text(json.dumps({"provider": provider, "ids": ids}, ensure_ascii=False), encoding="utf-8")
-
-
 def create_vector_backend(requested: str, *, index_dir: Path) -> VectorIndexBackend:
-    """Create requested vector backend with graceful fallback behavior."""
+    """Create requested vector backend with graceful fallback behavior.
+
+    Supported runtime backends are intentionally minimal: `json` and `sqlite`.
+    Legacy values are accepted and mapped to these backends.
+    """
     normalized = (requested or "json").strip().lower()
 
     if normalized in {"", "json"}:
@@ -309,22 +237,13 @@ def create_vector_backend(requested: str, *, index_dir: Path) -> VectorIndexBack
     if normalized in {"sqlite", "sqlite-vss"}:
         return SqliteVectorIndexBackend(index_dir)
 
-    if normalized == "faiss":
-        try:
-            __import__("faiss")  # type: ignore
-            __import__("numpy")
-            return FaissVectorIndexBackend(index_dir)
-        except Exception as exc:
-            logger.warning("Vector backend '{}' unavailable ({}), falling back to json", normalized, exc)
-            return JsonVectorIndexBackend(index_dir)
-
     if normalized == "auto":
-        try:
-            __import__("faiss")  # type: ignore
-            __import__("numpy")
-            return FaissVectorIndexBackend(index_dir)
-        except Exception:
-            return SqliteVectorIndexBackend(index_dir)
+        logger.warning("Vector backend 'auto' is deprecated, using sqlite")
+        return SqliteVectorIndexBackend(index_dir)
+
+    if normalized == "faiss":
+        logger.warning("Vector backend 'faiss' is deprecated, using json")
+        return JsonVectorIndexBackend(index_dir)
 
     logger.warning("Unknown vector backend '{}', falling back to json", normalized)
     return JsonVectorIndexBackend(index_dir)

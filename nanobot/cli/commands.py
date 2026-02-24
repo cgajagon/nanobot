@@ -1064,7 +1064,8 @@ def memory_inspect(
 
     console.print(f"{__logo__} Memory Inspect\n")
     console.print(f"Mode: [cyan]{config.agents.defaults.memory_mode}[/cyan]")
-    console.print(f"Vector backend: [cyan]{store.retriever.active_backend}[/cyan]")
+    console.print(f"Vector backend (active): [cyan]{store.retriever.active_backend}[/cyan]")
+    console.print("Vector backend (supported): [cyan]json | sqlite[/cyan]")
     console.print(f"Events: [green]{len(events)}[/green]")
     console.print(f"Profile items: [green]{report['profile_items']}[/green]")
     console.print(f"Open conflicts: [yellow]{report['open_conflicts']}[/yellow]")

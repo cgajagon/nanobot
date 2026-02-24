@@ -474,11 +474,7 @@ class AgentLoop:
             archive_all=archive_all,
             memory_window=self.memory_window,
             memory_mode=self.memory_mode,
-            retrieval_k=self.memory_retrieval_k,
-            token_budget=self.memory_token_budget,
-            recency_half_life_days=self.memory_recency_half_life_days,
             enable_contradiction_check=self.memory_enable_contradiction_check,
-            embedding_provider=self.memory_embedding_provider,
         )
 
     def _fallback_archive_snapshot(self, snapshot: list[dict]) -> bool:
