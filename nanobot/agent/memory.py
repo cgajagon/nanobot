@@ -695,7 +695,7 @@ class MemoryStore:
     PROFILE_STATUS_CONFLICTED = "conflicted"
     PROFILE_STATUS_STALE = "stale"
 
-    def __init__(self, workspace: Path, embedding_provider: str = "", vector_backend: str = "json"):
+    def __init__(self, workspace: Path, embedding_provider: str = "", vector_backend: str = "sqlite"):
         self.persistence = MemoryPersistence(workspace)
         self.memory_dir = self.persistence.memory_dir
         self.memory_file = self.persistence.memory_file

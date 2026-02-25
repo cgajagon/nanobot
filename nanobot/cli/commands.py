@@ -347,6 +347,7 @@ def gateway(
         memory_retrieval_k=config.agents.defaults.memory_retrieval_k,
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_recency_half_life_days=config.agents.defaults.memory_recency_half_life_days,
+        memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
         memory_embedding_provider=config.agents.defaults.memory_embedding_provider,
         memory_vector_backend=config.agents.defaults.memory_vector_backend,
@@ -511,6 +512,7 @@ def agent(
         memory_retrieval_k=config.agents.defaults.memory_retrieval_k,
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_recency_half_life_days=config.agents.defaults.memory_recency_half_life_days,
+        memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
         memory_embedding_provider=config.agents.defaults.memory_embedding_provider,
         memory_vector_backend=config.agents.defaults.memory_vector_backend,
@@ -1011,6 +1013,7 @@ def cron_run(
         memory_retrieval_k=config.agents.defaults.memory_retrieval_k,
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_recency_half_life_days=config.agents.defaults.memory_recency_half_life_days,
+        memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
         memory_embedding_provider=config.agents.defaults.memory_embedding_provider,
         brave_api_key=config.tools.web.search.api_key or None,
@@ -1083,7 +1086,7 @@ def memory_inspect(
     console.print(f"{__logo__} Memory Inspect\n")
     console.print(f"Mode: [cyan]{config.agents.defaults.memory_mode}[/cyan]")
     console.print(f"Vector backend (active): [cyan]{store.retriever.active_backend}[/cyan]")
-    console.print("Vector backend (supported): [cyan]json | sqlite[/cyan]")
+    console.print("Vector backend (supported): [cyan]sqlite[/cyan]")
     console.print(f"Events: [green]{len(events)}[/green]")
     console.print(f"Profile items: [green]{report['profile_items']}[/green]")
     console.print(f"Open conflicts: [yellow]{report['open_conflicts']}[/yellow]")

@@ -31,7 +31,7 @@ class ContextBuilder:
         memory_token_budget: int = 900,
         memory_recency_half_life_days: float = 30.0,
         memory_embedding_provider: str = "",
-        memory_vector_backend: str = "json",
+        memory_vector_backend: str = "sqlite",
     ):
         self.workspace = workspace
         self.memory = MemoryStore(
@@ -131,6 +131,11 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 - After writing or editing a file, re-read it if accuracy matters.
 - If a tool call fails, analyze the error before retrying with a different approach.
 
+## Verification & Uncertainty
+- Do not guess when evidence is weak, missing, or conflicting.
+- Verify important claims using available files/tools before finalizing an answer.
+- If verification is inconclusive, clearly state that the result is unclear and summarize what was checked.
+
 ## Memory
 - Remember important facts: write to {workspace_path}/memory/MEMORY.md
 - Recall past events: grep {workspace_path}/memory/HISTORY.md"""
@@ -172,6 +177,7 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        verify_before_answer: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -191,6 +197,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
         # System prompt
         system_prompt = self.build_system_prompt(skill_names, current_message=current_message)
+        if verify_before_answer:
+            system_prompt += (
+                "\n\n## Verification Required\n"
+                "Before answering this turn, verify the key claim(s) with available files/tools. "
+                "If results remain inconclusive, say the outcome is unclear and list what was verified."
+            )
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

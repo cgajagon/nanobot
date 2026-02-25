@@ -114,60 +114,13 @@ class MemoryEmbedder:
 class VectorIndexBackend:
     """Storage adapter for vector indexes."""
 
-    name = "json"
+    name = "sqlite"
 
     def load_items(self, provider: str) -> dict[str, list[float]]:
         raise NotImplementedError
 
     def save_items(self, provider: str, items: dict[str, list[float]], dim: int) -> None:
         raise NotImplementedError
-
-
-class JsonVectorIndexBackend(VectorIndexBackend):
-    """JSON-file vector index backend."""
-
-    name = "json"
-
-    def __init__(self, index_dir: Path):
-        self.index_dir = index_dir
-
-    @staticmethod
-    def provider_slug(provider: str) -> str:
-        slug = re.sub(r"[^a-zA-Z0-9_\-]+", "_", provider.strip().lower())
-        return slug or "hash"
-
-    def index_file(self, provider: str) -> Path:
-        return self.index_dir / f"vectors_{self.provider_slug(provider)}.json"
-
-    def load_items(self, provider: str) -> dict[str, list[float]]:
-        path = self.index_file(provider)
-        if not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            raw_items = payload.get("items") if isinstance(payload, dict) else None
-            if not isinstance(raw_items, dict):
-                return {}
-            out: dict[str, list[float]] = {}
-            for key, value in raw_items.items():
-                if not isinstance(key, str) or not isinstance(value, list):
-                    continue
-                out[key] = [float(v) for v in value]
-            return out
-        except Exception:
-            logger.warning("Failed to parse JSON vector index '{}', treating as empty", path)
-            return {}
-
-    def save_items(self, provider: str, items: dict[str, list[float]], dim: int) -> None:
-        path = self.index_file(provider)
-        payload = {
-            "provider": provider,
-            "backend": self.name,
-            "updated_at": "",
-            "dim": dim,
-            "items": items,
-        }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 class SqliteVectorIndexBackend(VectorIndexBackend):
@@ -224,26 +177,13 @@ class SqliteVectorIndexBackend(VectorIndexBackend):
 
 
 def create_vector_backend(requested: str, *, index_dir: Path) -> VectorIndexBackend:
-    """Create requested vector backend with graceful fallback behavior.
+    """Create SQLite vector backend.
 
-    Supported runtime backends are intentionally minimal: `json` and `sqlite`.
-    Legacy values are accepted and mapped to these backends.
+    SQLite is the only supported runtime backend.
     """
-    normalized = (requested or "json").strip().lower()
+    normalized = (requested or "sqlite").strip().lower()
 
-    if normalized in {"", "json"}:
-        return JsonVectorIndexBackend(index_dir)
+    if normalized not in {"", "sqlite"}:
+        logger.warning("Vector backend '{}' is not supported, using sqlite", normalized)
 
-    if normalized in {"sqlite", "sqlite-vss"}:
-        return SqliteVectorIndexBackend(index_dir)
-
-    if normalized == "auto":
-        logger.warning("Vector backend 'auto' is deprecated, using sqlite")
-        return SqliteVectorIndexBackend(index_dir)
-
-    if normalized == "faiss":
-        logger.warning("Vector backend 'faiss' is deprecated, using json")
-        return JsonVectorIndexBackend(index_dir)
-
-    logger.warning("Unknown vector backend '{}', falling back to json", normalized)
-    return JsonVectorIndexBackend(index_dir)
+    return SqliteVectorIndexBackend(index_dir)

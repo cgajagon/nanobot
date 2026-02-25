@@ -58,9 +58,10 @@ class AgentLoop:
         memory_retrieval_k: int = 6,
         memory_token_budget: int = 900,
         memory_recency_half_life_days: float = 30.0,
+        memory_uncertainty_threshold: float = 0.6,
         memory_enable_contradiction_check: bool = True,
         memory_embedding_provider: str = "",
-        memory_vector_backend: str = "json",
+        memory_vector_backend: str = "sqlite",
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -83,6 +84,7 @@ class AgentLoop:
         self.memory_retrieval_k = memory_retrieval_k
         self.memory_token_budget = memory_token_budget
         self.memory_recency_half_life_days = memory_recency_half_life_days
+        self.memory_uncertainty_threshold = memory_uncertainty_threshold
         self.memory_enable_contradiction_check = memory_enable_contradiction_check
         self.memory_embedding_provider = memory_embedding_provider
         self.memory_vector_backend = memory_vector_backend
@@ -320,6 +322,45 @@ class AgentLoop:
         if not lock.locked():
             self._consolidation_locks.pop(session_key, None)
 
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        content = (text or "").strip().lower()
+        if not content:
+            return False
+        if "?" in content:
+            return True
+        starters = (
+            "what ", "which ", "who ", "when ", "where ", "why ", "how ",
+            "is ", "are ", "do ", "does ", "did ", "can ", "could ",
+            "should ", "would ", "will ",
+        )
+        return content.startswith(starters)
+
+    def _estimate_grounding_confidence(self, query: str) -> float:
+        try:
+            items = self.context.memory.retrieve(
+                query,
+                top_k=1,
+                recency_half_life_days=self.memory_recency_half_life_days,
+                embedding_provider=self.memory_embedding_provider,
+            )
+        except Exception:
+            return 0.0
+        if not items:
+            return 0.0
+        top = items[0]
+        try:
+            score = float(top.get("score", 0.0))
+        except (TypeError, ValueError):
+            score = 0.0
+        return max(0.0, min(1.0, score))
+
+    def _should_force_verification(self, text: str) -> bool:
+        if not self._looks_like_question(text):
+            return False
+        confidence = self._estimate_grounding_confidence(text)
+        return confidence < self.memory_uncertainty_threshold
+
     async def _process_message(
         self,
         msg: InboundMessage,
@@ -430,11 +471,13 @@ class AgentLoop:
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=self.memory_window)
+        verify_before_answer = self._should_force_verification(msg.content)
         initial_messages = self.context.build_messages(
             history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel, chat_id=msg.chat_id,
+            verify_before_answer=verify_before_answer,
         )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:

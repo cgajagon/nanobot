@@ -93,7 +93,7 @@ class TestHybridMemoryStore:
         assert len(events) == 1
         assert events[0]["type"] == "preference"
 
-        index_file = store.index_dir / "vectors_hash.json"
+        index_file = store.index_dir / "vectors.sqlite3"
         assert index_file.exists()
 
         profile = store.read_profile()
@@ -152,7 +152,7 @@ class TestHybridMemoryStore:
         assert retrieved[0]["retrieval_reason"]["provider"] == "hash"
         assert retrieved[0]["provenance"]["canonical_id"] == retrieved[0]["id"]
 
-        index_file = store.index_dir / "vectors_hash.json"
+        index_file = store.index_dir / "vectors.sqlite3"
         assert index_file.exists()
 
         report = store.verify_memory(stale_days=90)
@@ -787,4 +787,4 @@ class TestHybridMemoryStore:
 
         retrieved = store.retrieve("region eu-west-1", top_k=2, embedding_provider="hash")
         assert retrieved
-        assert retrieved[0]["retrieval_reason"]["backend"] in {"faiss", "json"}
+        assert retrieved[0]["retrieval_reason"]["backend"] == "sqlite"
