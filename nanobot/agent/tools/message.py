@@ -42,7 +42,10 @@ class MessageTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Send a message to the user. Use this when you want to communicate something."
+        return (
+            "Send a message to a destination channel/chat. "
+            "For email delivery, set channel='email' and chat_id to the recipient email address."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -55,11 +58,11 @@ class MessageTool(Tool):
                 },
                 "channel": {
                     "type": "string",
-                    "description": "Optional: target channel (telegram, discord, etc.)"
+                    "description": "Optional: target channel (telegram, discord, email, etc.)"
                 },
                 "chat_id": {
                     "type": "string",
-                    "description": "Optional: target chat/user ID"
+                    "description": "Optional: target chat/user ID. For email, this would be the recipient's email address."
                 },
                 "media": {
                     "type": "array",

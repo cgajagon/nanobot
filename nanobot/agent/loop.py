@@ -239,6 +239,11 @@ class AgentLoop:
                     )
             else:
                 final_content = self._strip_think(response.content)
+                messages = self.context.add_assistant_message(
+                    messages,
+                    final_content,
+                    reasoning_content=response.reasoning_content,
+                )
                 break
 
         if final_content is None and iteration >= self.max_iterations:
@@ -247,6 +252,7 @@ class AgentLoop:
                 f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
                 "without completing the task. You can try breaking the task into smaller steps."
             )
+            messages = self.context.add_assistant_message(messages, final_content)
 
         return final_content, tools_used, messages
 
@@ -266,7 +272,9 @@ class AgentLoop:
                     response = await self._process_message(msg)
                     if response is not None:
                         await self.bus.publish_outbound(response)
-                    elif msg.channel == "cli":
+                    elif msg.channel in {"cli", "telegram"}:
+                        # Emit an empty outbound to let channel-side state (e.g. Telegram typing indicator)
+                        # flush even when the assistant only used tool-driven delivery in this turn.
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel, chat_id=msg.chat_id, content="", metadata=msg.metadata or {},
                         ))
