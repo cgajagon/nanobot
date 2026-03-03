@@ -347,6 +347,21 @@ def gateway(
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
+        memory_rollout_mode=config.agents.defaults.memory_rollout_mode,
+        memory_type_separation_enabled=config.agents.defaults.memory_type_separation_enabled,
+        memory_router_enabled=config.agents.defaults.memory_router_enabled,
+        memory_reflection_enabled=config.agents.defaults.memory_reflection_enabled,
+        memory_shadow_mode=config.agents.defaults.memory_shadow_mode,
+        memory_shadow_sample_rate=config.agents.defaults.memory_shadow_sample_rate,
+        memory_vector_health_enabled=config.agents.defaults.memory_vector_health_enabled,
+        memory_auto_reindex_on_empty_vector=config.agents.defaults.memory_auto_reindex_on_empty_vector,
+        memory_history_fallback_enabled=config.agents.defaults.memory_history_fallback_enabled,
+        memory_fallback_allowed_sources=config.agents.defaults.memory_fallback_allowed_sources,
+        memory_fallback_max_summary_chars=config.agents.defaults.memory_fallback_max_summary_chars,
+        memory_rollout_gate_min_recall_at_k=config.agents.defaults.memory_rollout_gate_min_recall_at_k,
+        memory_rollout_gate_min_precision_at_k=config.agents.defaults.memory_rollout_gate_min_precision_at_k,
+        memory_rollout_gate_max_avg_memory_context_tokens=config.agents.defaults.memory_rollout_gate_max_avg_memory_context_tokens,
+        memory_rollout_gate_max_history_fallback_ratio=config.agents.defaults.memory_rollout_gate_max_history_fallback_ratio,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -508,6 +523,21 @@ def agent(
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
+        memory_rollout_mode=config.agents.defaults.memory_rollout_mode,
+        memory_type_separation_enabled=config.agents.defaults.memory_type_separation_enabled,
+        memory_router_enabled=config.agents.defaults.memory_router_enabled,
+        memory_reflection_enabled=config.agents.defaults.memory_reflection_enabled,
+        memory_shadow_mode=config.agents.defaults.memory_shadow_mode,
+        memory_shadow_sample_rate=config.agents.defaults.memory_shadow_sample_rate,
+        memory_vector_health_enabled=config.agents.defaults.memory_vector_health_enabled,
+        memory_auto_reindex_on_empty_vector=config.agents.defaults.memory_auto_reindex_on_empty_vector,
+        memory_history_fallback_enabled=config.agents.defaults.memory_history_fallback_enabled,
+        memory_fallback_allowed_sources=config.agents.defaults.memory_fallback_allowed_sources,
+        memory_fallback_max_summary_chars=config.agents.defaults.memory_fallback_max_summary_chars,
+        memory_rollout_gate_min_recall_at_k=config.agents.defaults.memory_rollout_gate_min_recall_at_k,
+        memory_rollout_gate_min_precision_at_k=config.agents.defaults.memory_rollout_gate_min_precision_at_k,
+        memory_rollout_gate_max_avg_memory_context_tokens=config.agents.defaults.memory_rollout_gate_max_avg_memory_context_tokens,
+        memory_rollout_gate_max_history_fallback_ratio=config.agents.defaults.memory_rollout_gate_max_history_fallback_ratio,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
@@ -1005,6 +1035,21 @@ def cron_run(
         memory_token_budget=config.agents.defaults.memory_token_budget,
         memory_uncertainty_threshold=config.agents.defaults.memory_uncertainty_threshold,
         memory_enable_contradiction_check=config.agents.defaults.memory_enable_contradiction_check,
+        memory_rollout_mode=config.agents.defaults.memory_rollout_mode,
+        memory_type_separation_enabled=config.agents.defaults.memory_type_separation_enabled,
+        memory_router_enabled=config.agents.defaults.memory_router_enabled,
+        memory_reflection_enabled=config.agents.defaults.memory_reflection_enabled,
+        memory_shadow_mode=config.agents.defaults.memory_shadow_mode,
+        memory_shadow_sample_rate=config.agents.defaults.memory_shadow_sample_rate,
+        memory_vector_health_enabled=config.agents.defaults.memory_vector_health_enabled,
+        memory_auto_reindex_on_empty_vector=config.agents.defaults.memory_auto_reindex_on_empty_vector,
+        memory_history_fallback_enabled=config.agents.defaults.memory_history_fallback_enabled,
+        memory_fallback_allowed_sources=config.agents.defaults.memory_fallback_allowed_sources,
+        memory_fallback_max_summary_chars=config.agents.defaults.memory_fallback_max_summary_chars,
+        memory_rollout_gate_min_recall_at_k=config.agents.defaults.memory_rollout_gate_min_recall_at_k,
+        memory_rollout_gate_min_precision_at_k=config.agents.defaults.memory_rollout_gate_min_precision_at_k,
+        memory_rollout_gate_max_avg_memory_context_tokens=config.agents.defaults.memory_rollout_gate_max_avg_memory_context_tokens,
+        memory_rollout_gate_max_history_fallback_ratio=config.agents.defaults.memory_rollout_gate_max_history_fallback_ratio,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         restrict_to_workspace=config.tools.restrict_to_workspace,
@@ -1048,6 +1093,28 @@ def cron_run(
 memory_app = typer.Typer(help="Manage memory system")
 app.add_typer(memory_app, name="memory")
 
+def _memory_rollout_overrides(config: Config) -> dict[str, object]:
+    defaults = config.agents.defaults
+    return {
+        "memory_rollout_mode": defaults.memory_rollout_mode,
+        "memory_type_separation_enabled": defaults.memory_type_separation_enabled,
+        "memory_router_enabled": defaults.memory_router_enabled,
+        "memory_reflection_enabled": defaults.memory_reflection_enabled,
+        "memory_shadow_mode": defaults.memory_shadow_mode,
+        "memory_shadow_sample_rate": defaults.memory_shadow_sample_rate,
+        "memory_vector_health_enabled": defaults.memory_vector_health_enabled,
+        "memory_auto_reindex_on_empty_vector": defaults.memory_auto_reindex_on_empty_vector,
+        "memory_history_fallback_enabled": defaults.memory_history_fallback_enabled,
+        "memory_fallback_allowed_sources": defaults.memory_fallback_allowed_sources,
+        "memory_fallback_max_summary_chars": defaults.memory_fallback_max_summary_chars,
+        "rollout_gates": {
+            "min_recall_at_k": defaults.memory_rollout_gate_min_recall_at_k,
+            "min_precision_at_k": defaults.memory_rollout_gate_min_precision_at_k,
+            "max_avg_memory_context_tokens": defaults.memory_rollout_gate_max_avg_memory_context_tokens,
+            "max_history_fallback_ratio": defaults.memory_rollout_gate_max_history_fallback_ratio,
+        },
+    }
+
 
 @memory_app.command("inspect")
 def memory_inspect(
@@ -1061,6 +1128,7 @@ def memory_inspect(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
 
     observability = store.get_observability_report()
@@ -1075,6 +1143,11 @@ def memory_inspect(
     console.print("Mode: [cyan]mem0[/cyan]")
     console.print(f"mem0 enabled: [cyan]{backend.get('mem0_enabled', False)}[/cyan]")
     console.print(f"mem0 mode: [cyan]{backend.get('mem0_mode', 'disabled')}[/cyan]")
+    console.print(f"vector points: [cyan]{backend.get('vector_points_count', 0)}[/cyan]")
+    console.print(f"mem0 get_all count: [cyan]{backend.get('mem0_get_all_count', 0)}[/cyan]")
+    console.print(f"history rows: [cyan]{backend.get('history_rows_count', 0)}[/cyan]")
+    console.print(f"vector health: [cyan]{backend.get('vector_health_state', 'unknown')}[/cyan]")
+    console.print(f"mem0 add mode: [cyan]{backend.get('mem0_add_mode', '')}[/cyan]")
     console.print(f"Events: [green]{len(events)}[/green]")
     console.print(f"Profile items: [green]{report['profile_items']}[/green]")
     console.print(f"Open conflicts: [yellow]{report['open_conflicts']}[/yellow]")
@@ -1140,6 +1213,117 @@ def memory_inspect(
     console.print(f"\nProfile breakdown: preferences={pref_count}, stable_facts={fact_count}")
 
 
+@memory_app.command("metrics")
+def memory_metrics(
+    delta: bool = typer.Option(False, "--delta", help="Show metric deltas vs baseline snapshot"),
+    write_baseline: bool = typer.Option(False, "--write-baseline", help="Write current metrics snapshot as baseline"),
+    baseline_file: str = typer.Option("", "--baseline-file", help="Optional baseline JSON path"),
+):
+    """Show memory metrics and optional deltas against a saved baseline snapshot."""
+    import json
+    from datetime import datetime, timezone
+
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    observability = store.get_observability_report()
+    metrics = observability.get("metrics", {}) if isinstance(observability, dict) else {}
+    kpis = observability.get("kpis", {}) if isinstance(observability, dict) else {}
+    baseline_path = Path(baseline_file).expanduser() if baseline_file else (config.workspace_path / "memory" / "reports" / "metrics_baseline.json")
+
+    if write_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "metrics": metrics,
+            "kpis": kpis,
+        }
+        baseline_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[green]✓[/green] Wrote baseline snapshot: {baseline_path}")
+
+    if delta:
+        if not baseline_path.exists():
+            console.print(f"[red]Baseline file not found:[/red] {baseline_path}")
+            console.print("[dim]Run with --write-baseline first.[/dim]")
+            raise typer.Exit(1)
+        try:
+            payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            console.print(f"[red]Failed to parse baseline file:[/red] {exc}")
+            raise typer.Exit(1)
+        baseline_metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
+        baseline_kpis = payload.get("kpis", {}) if isinstance(payload, dict) else {}
+
+        keys = (
+            "retrieval_queries",
+            "retrieval_hits",
+            "retrieval_candidates",
+            "retrieval_returned",
+            "retrieval_source_vector_count",
+            "retrieval_source_get_all_count",
+            "retrieval_source_history_count",
+            "retrieval_rejected_blob_count",
+            "conflicts_detected",
+            "user_corrections",
+            "events_extracted",
+            "event_dedup_merges",
+            "profile_updates_applied",
+            "memory_context_calls",
+            "memory_context_tokens_total",
+        )
+        table = Table(title="Memory Metrics Delta")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Baseline", style="yellow")
+        table.add_column("Current", style="green")
+        table.add_column("Delta", style="magenta")
+        for key in keys:
+            baseline_value = int(baseline_metrics.get(key, 0) or 0)
+            current_value = int(metrics.get(key, 0) or 0)
+            delta_value = current_value - baseline_value
+            table.add_row(key, str(baseline_value), str(current_value), f"{delta_value:+d}")
+        console.print(table)
+
+        kpi_table = Table(title="Memory KPI Delta")
+        kpi_table.add_column("KPI", style="cyan")
+        kpi_table.add_column("Baseline", style="yellow")
+        kpi_table.add_column("Current", style="green")
+        kpi_table.add_column("Delta", style="magenta")
+        for key in ("retrieval_hit_rate", "history_fallback_ratio", "avg_memory_context_tokens", "avg_shadow_overlap"):
+            baseline_value = float(baseline_kpis.get(key, 0.0) or 0.0)
+            current_value = float(kpis.get(key, 0.0) or 0.0)
+            delta_value = current_value - baseline_value
+            kpi_table.add_row(key, f"{baseline_value:.4f}", f"{current_value:.4f}", f"{delta_value:+.4f}")
+        console.print(kpi_table)
+        console.print(f"[dim]Baseline file: {baseline_path}[/dim]")
+        return
+
+    table = Table(title="Memory Metrics (Current)")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    for key in (
+        "retrieval_queries",
+        "retrieval_hits",
+        "retrieval_candidates",
+        "retrieval_returned",
+        "retrieval_source_vector_count",
+        "retrieval_source_get_all_count",
+        "retrieval_source_history_count",
+        "retrieval_rejected_blob_count",
+        "events_extracted",
+        "event_dedup_merges",
+        "profile_updates_applied",
+        "conflicts_detected",
+        "user_corrections",
+    ):
+        table.add_row(key, str(metrics.get(key, 0)))
+    console.print(table)
+
+
 @memory_app.command("rebuild")
 def memory_rebuild(
     max_events: int = typer.Option(30, "--max-events", help="Max recent events for MEMORY.md snapshot"),
@@ -1151,10 +1335,93 @@ def memory_rebuild(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     snapshot = store.rebuild_memory_snapshot(max_events=max_events, write=True)
     line_count = len(snapshot.splitlines())
     console.print(f"[green]✓[/green] Rebuilt MEMORY.md with {line_count} lines")
+
+
+@memory_app.command("reindex")
+def memory_reindex(
+    max_events: int = typer.Option(0, "--max-events", help="Optional max events to include (0 = all)"),
+    reset: bool = typer.Option(
+        True,
+        "--reset/--no-reset",
+        help="Reset mem0 user memories before rebuilding from structured memory.",
+    ),
+):
+    """Reindex mem0 vectors from structured profile/events only."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    result = store.reindex_from_structured_memory(
+        max_events=max_events if max_events > 0 else None,
+        reset_existing=reset,
+        compact=False,
+    )
+    table = Table(title="Memory Reindex")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("ok", str(result.get("ok")))
+    table.add_row("reason", str(result.get("reason", "")))
+    table.add_row("written", str(result.get("written", 0)))
+    table.add_row("failed", str(result.get("failed", 0)))
+    table.add_row("events_indexed", str(result.get("events_indexed", 0)))
+    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
+    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
+    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
+    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
+    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
+    console.print(table)
+
+
+@memory_app.command("compact")
+def memory_compact(
+    max_events: int = typer.Option(0, "--max-events", help="Optional max events to include (0 = all)"),
+    reset: bool = typer.Option(
+        True,
+        "--reset/--no-reset",
+        help="Reset mem0 user memories before compact rebuild.",
+    ),
+):
+    """Compact backend memory (dedup/drop superseded) and rebuild mem0 from structured sources."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    result = store.reindex_from_structured_memory(
+        max_events=max_events if max_events > 0 else None,
+        reset_existing=reset,
+        compact=True,
+    )
+    table = Table(title="Memory Compaction")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("ok", str(result.get("ok")))
+    table.add_row("reason", str(result.get("reason", "")))
+    table.add_row("written", str(result.get("written", 0)))
+    table.add_row("failed", str(result.get("failed", 0)))
+    table.add_row("events_before_compaction", str(result.get("events_before_compaction", 0)))
+    table.add_row("events_after_compaction", str(result.get("events_after_compaction", 0)))
+    table.add_row("events_superseded_dropped", str(result.get("events_superseded_dropped", 0)))
+    table.add_row("events_duplicates_dropped", str(result.get("events_duplicates_dropped", 0)))
+    table.add_row("vector_points_after", str(result.get("vector_points_after", 0)))
+    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
+    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
+    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
+    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
+    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
+    console.print(table)
 
 
 @memory_app.command("verify")
@@ -1168,6 +1435,7 @@ def memory_verify(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     report = store.verify_memory(stale_days=stale_days, update_profile=True)
 
@@ -1191,6 +1459,9 @@ def memory_verify(
 def memory_eval(
     cases_file: str = typer.Option("", "--cases-file", help="Path to JSON benchmark cases file"),
     top_k: int = typer.Option(6, "--top-k", "-k", help="Default top-k when case does not specify it"),
+    seeded_profile: str = typer.Option("", "--seeded-profile", help="Optional seeded profile JSON path"),
+    seeded_events: str = typer.Option("", "--seeded-events", help="Optional seeded events JSONL path"),
+    seed_only: bool = typer.Option(False, "--seed-only", help="Seed + reindex only, do not run evaluation"),
     export: bool = typer.Option(False, "--export", help="Save evaluation report JSON under memory/reports/"),
     output_file: str = typer.Option("", "--output-file", help="Optional JSON output path (implies --export)"),
 ):
@@ -1203,7 +1474,34 @@ def memory_eval(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
+
+    if seeded_profile or seeded_events:
+        if not seeded_profile or not seeded_events:
+            console.print("[red]Both --seeded-profile and --seeded-events are required together.[/red]")
+            raise typer.Exit(1)
+        seed_result = store.seed_structured_corpus(
+            profile_path=Path(seeded_profile).expanduser(),
+            events_path=Path(seeded_events).expanduser(),
+        )
+        seed_table = Table(title="Seeded Corpus")
+        seed_table.add_column("Field", style="cyan")
+        seed_table.add_column("Value", style="green")
+        seed_table.add_row("ok", str(seed_result.get("ok", False)))
+        seed_table.add_row("reason", str(seed_result.get("reason", "")))
+        seed_table.add_row("seeded_profile_items", str(seed_result.get("seeded_profile_items", 0)))
+        seed_table.add_row("seeded_events", str(seed_result.get("seeded_events", 0)))
+        reindex_payload = seed_result.get("reindex", {}) if isinstance(seed_result.get("reindex"), dict) else {}
+        seed_table.add_row("reindex_written", str(reindex_payload.get("written", 0)))
+        seed_table.add_row("reindex_failed", str(reindex_payload.get("failed", 0)))
+        seed_table.add_row("vector_points_after", str(reindex_payload.get("vector_points_after", 0)))
+        console.print(seed_table)
+        if not bool(seed_result.get("ok")):
+            raise typer.Exit(2)
+        if seed_only:
+            console.print("[green]✓[/green] Seed-only completed.")
+            return
 
     path = Path(cases_file) if cases_file else (config.workspace_path / "memory" / "eval_cases.json")
     if not path.exists():
@@ -1238,6 +1536,7 @@ def memory_eval(
         default_top_k=top_k,
     )
     obs = store.get_observability_report()
+    rollout_gate = store.evaluate_rollout_gates(evaluation, obs)
     eval_summary = evaluation.get("summary", {})
     kpis = obs.get("kpis", {})
 
@@ -1251,7 +1550,25 @@ def memory_eval(
     table.add_row("contradiction_rate_per_100_messages", str(kpis.get("contradiction_rate_per_100_messages", 0.0)))
     table.add_row("user_correction_rate_per_100_user_messages", str(kpis.get("user_correction_rate_per_100_user_messages", 0.0)))
     table.add_row("avg_memory_context_tokens", str(kpis.get("avg_memory_context_tokens", 0.0)))
+    table.add_row("avg_shadow_overlap", str(kpis.get("avg_shadow_overlap", 0.0)))
+    table.add_row("rollout_gate_passed", str(rollout_gate.get("passed", False)))
     console.print(table)
+
+    gate_checks = rollout_gate.get("checks", [])
+    if gate_checks:
+        gate_table = Table(title="Rollout Gates")
+        gate_table.add_column("Gate", style="cyan")
+        gate_table.add_column("Actual", style="green")
+        gate_table.add_column("Target")
+        gate_table.add_column("Pass")
+        for check in gate_checks:
+            gate_table.add_row(
+                str(check.get("name", "")),
+                str(check.get("actual", "")),
+                f"{check.get('op', '')} {check.get('threshold', '')}",
+                "yes" if bool(check.get("passed")) else "no",
+            )
+        console.print(gate_table)
 
     details = evaluation.get("evaluated", [])
     if details:
@@ -1262,7 +1579,9 @@ def memory_eval(
         detail_table.add_column("Hits", style="green")
         detail_table.add_column("Recall@k", style="green")
         detail_table.add_column("Precision@k", style="green")
+        detail_table.add_column("Why Missed")
         for item in details[:20]:
+            why_missed = item.get("why_missed", [])
             detail_table.add_row(
                 str(item.get("query", ""))[:60],
                 str(item.get("top_k", "")),
@@ -1270,6 +1589,7 @@ def memory_eval(
                 str(item.get("hits", "")),
                 str(item.get("case_recall_at_k", "")),
                 str(item.get("case_precision_at_k", "")),
+                ",".join(str(x) for x in why_missed) if isinstance(why_missed, list) else "",
             )
         console.print(detail_table)
 
@@ -1277,6 +1597,10 @@ def memory_eval(
         saved = store.save_evaluation_report(
             evaluation,
             obs,
+            rollout={
+                "status": store.get_rollout_status(),
+                "gates": rollout_gate,
+            },
             output_file=output_file or None,
         )
         console.print(f"[green]✓[/green] Saved report: {saved}")
@@ -1293,6 +1617,7 @@ def memory_conflicts(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     rows = store.list_conflicts(include_closed=all)
     if not rows:
@@ -1332,6 +1657,7 @@ def memory_resolve(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     details = store.resolve_conflict_details(index=index, action=action)
     if not details.get("ok"):
@@ -1363,6 +1689,7 @@ def memory_pin(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     try:
         ok = store.set_item_pin(field, text, pinned=True)
@@ -1386,6 +1713,7 @@ def memory_unpin(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     try:
         ok = store.set_item_pin(field, text, pinned=False)
@@ -1409,6 +1737,7 @@ def memory_outdated(
     config = load_config()
     store = MemoryStore(
         config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
     )
     try:
         ok = store.mark_item_outdated(field, text)

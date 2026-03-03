@@ -1,28 +1,29 @@
 {
   "cases": [
-    {
-      "query": "oauth2 authentication",
-      "expected_ids": ["ev-auth-oauth2"],
-      "expected_any": ["oauth2"],
-      "top_k": 4
-    },
-    {
-      "query": "postgresql primary database",
-      "expected_ids": ["ev-db-postgres"],
-      "expected_any": ["postgresql"],
-      "top_k": 4
-    },
-    {
-      "query": "deployment region",
-      "expected_ids": ["ev-region"],
-      "expected_any": ["eu-west-1"],
-      "top_k": 4
-    },
-    {
-      "query": "memory context token budget",
-      "expected_ids": ["ev-memory-budget"],
-      "expected_any": ["token budget"],
-      "top_k": 4
-    }
+    {"query":"What are the user's response style preferences?","expected_any":["prefer","concise","bullet"],"expected_any_mode":"normalized","expected_topics":["user_preference"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What tools does the user prefer using?","expected_any":["cli","prefer","tool"],"expected_any_mode":"normalized","expected_topics":["user_preference"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"List long-term constraints we must follow.","expected_any":["constraint","must","avoid destructive"],"expected_any_mode":"normalized","expected_topics":["constraint"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What stable environment facts do we know?","expected_any":["oauth2","runtime environment","local qdrant"],"expected_any_mode":"normalized","expected_topics":["knowledge"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What happened last time deployment failed?","expected_any":["failed","deployment","region policy"],"expected_any_mode":"normalized","expected_topics":["infra"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"Show recent infrastructure incidents.","expected_any":["incident","gateway","502"],"expected_any_mode":"normalized","expected_topics":["infra"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"What did we try that did not work before?","expected_any":["tried","timeout","persisted"],"expected_any_mode":"normalized","expected_topics":["infra"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"What happened yesterday in the project timeline?","expected_any":["task","decision","open"],"expected_any_mode":"normalized","expected_topics":["task_progress","decision_log"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"Which tasks or decisions are still open?","expected_any":["open task","pending user input"],"expected_any_mode":"normalized","expected_topics":["task_progress","decision_log"],"expected_memory_types":["episodic"],"expected_status_any":["open","needs_user"],"top_k":6},
+    {"query":"Which tasks are resolved or completed?","expected_any":["task closed","resolved"],"expected_any_mode":"normalized","expected_topics":["task_progress"],"expected_memory_types":["episodic"],"expected_status_any":["resolved"],"top_k":6},
+    {"query":"What are the next planning steps?","expected_any":["open task","finalize relevance lift"],"expected_any_mode":"normalized","expected_topics":["task_progress"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"What active projects are currently in progress?","expected_any":["relevance lift","in progress"],"expected_any_mode":"normalized","expected_topics":["project","task_progress"],"expected_memory_types":["semantic","episodic"],"top_k":6},
+    {"query":"What decisions were made about memory architecture?","expected_any":["decision","keep_new","rollout"],"expected_any_mode":"normalized","expected_topics":["decision_log"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"Which older facts were superseded by newer facts?","expected_any":["superseded","eu-west-1","us-east-1"],"expected_any_mode":"normalized","expected_topics":["knowledge"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What memory conflicts were detected and resolved?","expected_any":["conflict","resolved","keep_new"],"expected_any_mode":"normalized","expected_topics":["decision_log"],"expected_memory_types":["episodic"],"expected_status_any":["resolved"],"top_k":6},
+    {"query":"Reflect on lessons learned from recent incidents.","expected_any":["reflection insight","rollout gates","history fallback"],"expected_any_mode":"normalized","expected_topics":["reflection"],"expected_memory_types":["reflection"],"top_k":6},
+    {"query":"What reflection insights are grounded by evidence?","expected_any":["reflection insight","evidence"],"expected_any_mode":"normalized","expected_topics":["reflection"],"expected_memory_types":["reflection"],"required_min_hits":2,"top_k":6},
+    {"query":"What collaborators or relationships are relevant?","expected_any":["works with","platform team","carlos"],"expected_any_mode":"normalized","expected_topics":["relationship"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"Which memory items are stale and lower-priority?","expected_any":["superseded","older fact"],"expected_any_mode":"normalized","expected_topics":["knowledge"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"Summarize the most relevant semantic memories now.","expected_any":["oauth2","constraint","preference"],"expected_any_mode":"normalized","expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What constraints should be applied before running commands?","expected_any":["avoid destructive","explicitly requested","config precedence"],"expected_any_mode":"normalized","expected_topics":["constraint"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What unresolved decisions need user input?","expected_any":["needs user input","history fallback"],"expected_any_mode":"normalized","expected_topics":["decision_log"],"expected_memory_types":["episodic"],"expected_status_any":["needs_user"],"top_k":6},
+    {"query":"What profile updates were applied recently?","expected_any":["profile update applied","response style"],"expected_any_mode":"normalized","expected_topics":["profile_update"],"expected_memory_types":["semantic"],"top_k":6},
+    {"query":"What corrections did the user provide?","expected_any":["user corrected","deployment region"],"expected_any_mode":"normalized","expected_topics":["user_correction"],"expected_memory_types":["episodic"],"top_k":6},
+    {"query":"What memory behavior is currently enabled in rollout?","expected_any":["rollout status","router enabled","shadow mode"],"expected_any_mode":"normalized","expected_topics":["rollout"],"expected_memory_types":["semantic"],"required_min_hits":2,"top_k":6}
   ]
 }

@@ -58,6 +58,21 @@ class AgentLoop:
         memory_token_budget: int = 900,
         memory_uncertainty_threshold: float = 0.6,
         memory_enable_contradiction_check: bool = True,
+        memory_rollout_mode: str = "enabled",
+        memory_type_separation_enabled: bool = True,
+        memory_router_enabled: bool = True,
+        memory_reflection_enabled: bool = True,
+        memory_shadow_mode: bool = False,
+        memory_shadow_sample_rate: float = 0.2,
+        memory_vector_health_enabled: bool = True,
+        memory_auto_reindex_on_empty_vector: bool = True,
+        memory_history_fallback_enabled: bool = False,
+        memory_fallback_allowed_sources: list[str] | None = None,
+        memory_fallback_max_summary_chars: int = 280,
+        memory_rollout_gate_min_recall_at_k: float = 0.55,
+        memory_rollout_gate_min_precision_at_k: float = 0.25,
+        memory_rollout_gate_max_avg_memory_context_tokens: float = 1400.0,
+        memory_rollout_gate_max_history_fallback_ratio: float = 0.05,
         brave_api_key: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -80,6 +95,25 @@ class AgentLoop:
         self.memory_token_budget = memory_token_budget
         self.memory_uncertainty_threshold = memory_uncertainty_threshold
         self.memory_enable_contradiction_check = memory_enable_contradiction_check
+        self.memory_rollout_overrides = {
+            "memory_rollout_mode": memory_rollout_mode,
+            "memory_type_separation_enabled": memory_type_separation_enabled,
+            "memory_router_enabled": memory_router_enabled,
+            "memory_reflection_enabled": memory_reflection_enabled,
+            "memory_shadow_mode": memory_shadow_mode,
+            "memory_shadow_sample_rate": memory_shadow_sample_rate,
+            "memory_vector_health_enabled": memory_vector_health_enabled,
+            "memory_auto_reindex_on_empty_vector": memory_auto_reindex_on_empty_vector,
+            "memory_history_fallback_enabled": memory_history_fallback_enabled,
+            "memory_fallback_allowed_sources": memory_fallback_allowed_sources or ["profile", "events", "mem0_get_all"],
+            "memory_fallback_max_summary_chars": memory_fallback_max_summary_chars,
+            "rollout_gates": {
+                "min_recall_at_k": memory_rollout_gate_min_recall_at_k,
+                "min_precision_at_k": memory_rollout_gate_min_precision_at_k,
+                "max_avg_memory_context_tokens": memory_rollout_gate_max_avg_memory_context_tokens,
+                "max_history_fallback_ratio": memory_rollout_gate_max_history_fallback_ratio,
+            },
+        }
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -89,6 +123,7 @@ class AgentLoop:
             workspace,
             memory_retrieval_k=self.memory_retrieval_k,
             memory_token_budget=self.memory_token_budget,
+            memory_rollout_overrides=self.memory_rollout_overrides,
         )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
@@ -462,7 +497,7 @@ class AgentLoop:
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/help — Show available commands")
 
-        memory_store = MemoryStore(self.workspace)
+        memory_store = MemoryStore(self.workspace, rollout_overrides=self.memory_rollout_overrides)
 
         conflict_reply = memory_store.handle_user_conflict_reply(msg.content)
         if conflict_reply.get("handled"):
@@ -487,6 +522,15 @@ class AgentLoop:
                 )
         except Exception:
             logger.exception("Live correction capture failed")
+
+        # Proactively ask for unresolved conflicts discovered during prior consolidation turns.
+        pending_conflict_question = memory_store.ask_user_for_conflict()
+        if pending_conflict_question:
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=pending_conflict_question,
+            )
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
@@ -601,7 +645,7 @@ class AgentLoop:
                 f"Fallback archive from /new ({len(lines)} messages)"
             )
             entry = header + "\n" + "\n".join(lines)
-            MemoryStore(self.workspace).append_history(entry)
+            MemoryStore(self.workspace, rollout_overrides=self.memory_rollout_overrides).append_history(entry)
             logger.warning("/new used fallback archival: {} messages", len(lines))
             return True
         except Exception:

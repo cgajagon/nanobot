@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -463,6 +464,9 @@ class _Mem0Adapter:
             ("fastembed", {"model": "BAAI/bge-small-en-v1.5"}, 384),
             ("huggingface", {"model": "sentence-transformers/all-MiniLM-L6-v2"}, 384),
         ]
+        self.last_add_mode = "unknown"
+        self._infer_true_disabled = False
+        self._infer_true_disable_reason = ""
         self._init_client()
 
     def _load_fallback_config(self, payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -581,10 +585,27 @@ class _Mem0Adapter:
                 payload = None
         self._load_fallback_config(payload)
 
+        def _ensure_local_qdrant_on_disk(config_payload: dict[str, Any]) -> dict[str, Any]:
+            out = dict(config_payload)
+            vector_store = out.get("vector_store")
+            if not isinstance(vector_store, dict):
+                return out
+            provider = str(vector_store.get("provider", "")).strip().lower()
+            if provider != "qdrant":
+                return out
+            vs_cfg = dict(vector_store.get("config") or {})
+            # For local qdrant path mode in mem0>=1.0.4, on_disk must be true or data can be reset.
+            if str(vs_cfg.get("path", "")).strip():
+                vs_cfg["on_disk"] = True
+            vector_store["config"] = vs_cfg
+            out["vector_store"] = vector_store
+            return out
+
         try:
             if payload is not None:
                 mem0_payload = dict(payload)
                 mem0_payload.pop("fallback", None)
+                mem0_payload = _ensure_local_qdrant_on_disk(mem0_payload)
                 self.client = Mem0Memory.from_config(mem0_payload)
             else:
                 # Force local writable persistence instead of ~/.mem0/*
@@ -596,6 +617,7 @@ class _Mem0Adapter:
                             "config": {
                                 "collection_name": "nanobot_mem0",
                                 "path": str(local_mem0_dir / "qdrant"),
+                                "on_disk": True,
                             },
                         },
                     }
@@ -634,6 +656,7 @@ class _Mem0Adapter:
                                 "collection_name": f"nanobot_mem0_local_{provider}",
                                 "path": str(local_mem0_dir / "qdrant"),
                                 "embedding_model_dims": dims,
+                                "on_disk": True,
                             },
                         },
                         "history_db_path": str(local_mem0_dir / "history.db"),
@@ -661,6 +684,292 @@ class _Mem0Adapter:
                     return [row for row in rows if isinstance(row, dict)]
         return []
 
+    def get_all_count(self, *, limit: int = 200) -> int:
+        if not self.enabled or not self.client:
+            return 0
+        try:
+            raw = self.client.get_all(user_id=self.user_id, limit=max(1, limit))
+        except TypeError:
+            try:
+                raw = self.client.get_all(self.user_id, max(1, limit))
+            except Exception:
+                return 0
+        except Exception:
+            return 0
+        return len(self._rows(raw))
+
+    def flush_vector_store(self) -> bool:
+        if not self.client:
+            return False
+        try:
+            vector_store = getattr(self.client, "vector_store", None)
+            if vector_store is None:
+                return False
+            vector_client = getattr(vector_store, "client", None)
+            if vector_client is None or not hasattr(vector_client, "close"):
+                return False
+            vector_client.close()
+            return True
+        except Exception:
+            return False
+
+    def reopen_client(self) -> None:
+        self.enabled = False
+        self.client = None
+        self.mode = "disabled"
+        self.error = None
+        self._local_fallback_attempted = False
+        self._init_client()
+
+    def delete_all_user_memories(self) -> tuple[bool, str, int]:
+        """Delete all memories for current user_id. Returns (ok, reason, deleted_estimate)."""
+        if not self.enabled or not self.client:
+            return False, "mem0_disabled", 0
+        before = self.get_all_count(limit=5000)
+        try:
+            self.client.delete_all(user_id=self.user_id)
+            return True, "delete_all_user_id", before
+        except TypeError:
+            try:
+                self.client.delete_all(self.user_id)
+                return True, "delete_all_positional_user_id", before
+            except Exception as exc:
+                return False, f"delete_all_failed:{exc}", 0
+        except Exception as exc:
+            return False, f"delete_all_failed:{exc}", 0
+
+    @staticmethod
+    def _tokenize(text: str) -> set[str]:
+        return {tok for tok in re.findall(r"[a-z0-9]+", text.lower()) if len(tok) >= 2}
+
+    @classmethod
+    def _lexical_score(cls, query: str, candidate: str) -> float:
+        q = cls._tokenize(query)
+        c = cls._tokenize(candidate)
+        if not q or not c:
+            return 0.0
+        overlap = len(q & c)
+        if overlap <= 0:
+            return 0.0
+        return overlap / max(len(q), 1)
+
+    def _row_to_item(self, item: dict[str, Any], *, fallback_score: float | None = None) -> dict[str, Any] | None:
+        summary = str(item.get("memory") or item.get("text") or item.get("summary") or "").strip()
+        if not summary:
+            return None
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        memory_type = str(metadata.get("memory_type", "episodic")).strip().lower() or "episodic"
+        if memory_type not in {"semantic", "episodic", "reflection"}:
+            memory_type = "episodic"
+        stability = str(metadata.get("stability", "medium")).strip().lower() or "medium"
+        if stability not in {"high", "medium", "low"}:
+            stability = "medium"
+        source = str(metadata.get("source", "chat")).strip().lower() or "chat"
+        topic = str(metadata.get("topic", "general")).strip() or "general"
+        confidence_raw = metadata.get("confidence")
+        try:
+            confidence = min(max(float(confidence_raw if confidence_raw is not None else 0.7), 0.0), 1.0)
+        except (TypeError, ValueError):
+            confidence = 0.7
+        evidence_refs = metadata.get("evidence_refs")
+        if not isinstance(evidence_refs, list):
+            evidence_refs = []
+        evidence_refs = [str(x).strip() for x in evidence_refs if str(x).strip()]
+        timestamp = (
+            item.get("updated_at")
+            or item.get("created_at")
+            or metadata.get("timestamp")
+            or ""
+        )
+        event_type = str(metadata.get("event_type", "fact"))
+        raw_score = item.get("score", 0.0)
+        try:
+            score = float(raw_score if raw_score is not None else 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if fallback_score is not None:
+            score = max(score, fallback_score)
+        canonical_id = str(item.get("id") or hashlib.sha1(summary.encode("utf-8")).hexdigest())
+        return {
+            "id": canonical_id,
+            "timestamp": str(timestamp),
+            "type": event_type,
+            "summary": summary,
+            "entities": metadata.get("entities", []),
+            "score": score,
+            "memory_type": memory_type,
+            "topic": topic,
+            "stability": stability,
+            "source": source,
+            "confidence": confidence,
+            "evidence_refs": evidence_refs,
+            "retrieval_reason": {
+                "provider": "mem0",
+                "backend": "mem0",
+                "semantic": round(score, 4),
+                "recency": 0.0,
+            },
+            "provenance": {
+                "canonical_id": canonical_id,
+                "source_span": metadata.get("source_span"),
+            },
+        }
+
+    @staticmethod
+    def _looks_blob_like_summary(summary: str) -> bool:
+        text = str(summary or "").strip().lower()
+        if not text:
+            return True
+        markers = ("[runtime context]", "/home/", ".jsonl:", "```", "# memory", "## ")
+        if any(marker in text for marker in markers):
+            return True
+        return summary.count("\n") >= 4
+
+    def _fallback_search_via_get_all(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        allowed_sources: set[str] | None = None,
+        max_summary_chars: int = 280,
+        reject_blob_like: bool = True,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not self.client:
+            return [], 0
+        try:
+            raw = self.client.get_all(user_id=self.user_id, limit=max(100, top_k * 25))
+        except TypeError:
+            try:
+                raw = self.client.get_all(self.user_id, max(100, top_k * 25))
+            except Exception:
+                return [], 0
+        except Exception:
+            return [], 0
+
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        rejected_blob_like = 0
+        seen_norm: set[str] = set()
+        for item in self._rows(raw):
+            summary = str(item.get("memory") or item.get("text") or item.get("summary") or "").strip()
+            if not summary:
+                continue
+            if len(summary) > max_summary_chars:
+                continue
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            source = str(metadata.get("source", "mem0_get_all")).strip().lower() or "mem0_get_all"
+            if isinstance(allowed_sources, set) and allowed_sources and source not in allowed_sources:
+                continue
+            if reject_blob_like and self._looks_blob_like_summary(summary):
+                rejected_blob_like += 1
+                continue
+            lexical = self._lexical_score(query, summary)
+            if lexical <= 0:
+                continue
+            normalized = self._row_to_item(item, fallback_score=lexical)
+            if normalized is None:
+                continue
+            normalized["source"] = source
+            normalized_reason = normalized.get("retrieval_reason")
+            if isinstance(normalized_reason, dict):
+                normalized_reason["backend"] = "mem0_get_all"
+            norm_key = re.sub(r"\s+", " ", summary.strip().lower())
+            if norm_key in seen_norm:
+                continue
+            seen_norm.add(norm_key)
+            ranked.append((lexical, normalized))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in ranked[: max(1, top_k)]], rejected_blob_like
+
+    @staticmethod
+    def _history_memory_type(summary: str) -> str:
+        text = summary.lower()
+        if any(token in text for token in ("failed", "error", "incident", "tried", "attempt", "resolved", "yesterday")):
+            return "episodic"
+        if any(token in text for token in ("prefer", "always", "never", "must", "cannot", "user", "setup", "uses")):
+            return "semantic"
+        return "semantic"
+
+    def _fallback_search_via_history_db(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        max_summary_chars: int = 280,
+        reject_blob_like: bool = True,
+    ) -> tuple[list[dict[str, Any]], int]:
+        if not self._local_mem0_dir:
+            return [], 0
+        history_db = self._local_mem0_dir / "history.db"
+        if not history_db.exists():
+            return [], 0
+        try:
+            conn = sqlite3.connect(history_db)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT memory_id, new_memory, created_at, event
+                FROM history
+                WHERE COALESCE(is_deleted, 0) = 0
+                  AND COALESCE(new_memory, '') != ''
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (max(200, top_k * 40),),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        except Exception:
+            return [], 0
+
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        rejected_blob_like = 0
+        seen_norm: set[str] = set()
+        for memory_id, text, created_at, event in rows:
+            summary = str(text or "").strip()
+            if not summary:
+                continue
+            if len(summary) > max_summary_chars:
+                continue
+            if reject_blob_like and self._looks_blob_like_summary(summary):
+                rejected_blob_like += 1
+                continue
+            lexical = self._lexical_score(query, summary)
+            if lexical <= 0:
+                continue
+            memory_type = self._history_memory_type(summary)
+            item = {
+                "id": str(memory_id or hashlib.sha1(summary.encode("utf-8")).hexdigest()),
+                "timestamp": str(created_at or ""),
+                "type": "fact",
+                "summary": summary,
+                "entities": [],
+                "score": lexical,
+                "memory_type": memory_type,
+                "topic": "history",
+                "stability": "medium" if memory_type == "episodic" else "high",
+                "source": "history_db",
+                "confidence": 0.6,
+                "evidence_refs": [],
+                "retrieval_reason": {
+                    "provider": "mem0",
+                    "backend": "history_db_fallback",
+                    "semantic": round(lexical, 4),
+                    "recency": 0.0,
+                },
+                "provenance": {
+                    "canonical_id": str(memory_id or ""),
+                    "source_span": None,
+                    "event": str(event or ""),
+                },
+            }
+            norm_key = re.sub(r"\s+", " ", summary.strip().lower())
+            if norm_key in seen_norm:
+                continue
+            seen_norm.add(norm_key)
+            ranked.append((lexical, item))
+        ranked.sort(key=lambda pair: pair[0], reverse=True)
+        return [item for _, item in ranked[: max(1, top_k)]], rejected_blob_like
+
     def add_text(self, text: str, *, metadata: dict[str, Any] | None = None) -> bool:
         if not self.enabled or not self.client or not text.strip():
             return False
@@ -668,33 +977,91 @@ class _Mem0Adapter:
         kwargs: dict[str, Any] = {"user_id": self.user_id}
         if metadata:
             kwargs["metadata"] = metadata
-        try:
-            self.client.add(messages, infer=False, **kwargs)
-            return True
-        except TypeError:
-            try:
-                self.client.add(messages, **kwargs)
-                return True
-            except Exception:
-                return False
-        except Exception as exc:
-            if self._activate_local_fallback(reason=f"add_text failed: {exc}") and self.client:
-                try:
-                    self.client.add(messages, infer=False, **kwargs)
-                    return True
-                except TypeError:
-                    try:
-                        self.client.add(messages, **kwargs)
-                        return True
-                    except Exception:
-                        return False
-                except Exception:
-                    return False
-            return False
+        add_debug = str(os.getenv("NANOBOT_MEM0_ADD_DEBUG", "")).strip().lower() in {"1", "true", "yes", "on"}
+        verify_write = str(os.getenv("NANOBOT_MEM0_VERIFY_WRITE", "true")).strip().lower() not in {"0", "false", "no", "off"}
+        force_infer_true = str(os.getenv("NANOBOT_MEM0_FORCE_INFER_TRUE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        before_count = self.get_all_count(limit=200) if verify_write or add_debug else -1
 
-    def search(self, query: str, *, top_k: int = 6) -> list[dict[str, Any]]:
+        def _is_infer_true_disabled_error(exc: Exception) -> bool:
+            text = str(exc).lower()
+            markers = (
+                "insufficient_quota",
+                "exceeded your current quota",
+                "rate limit",
+                "rate_limit",
+                "invalid api key",
+                "authentication",
+                "unauthorized",
+                "api key",
+            )
+            return any(marker in text for marker in markers)
+
+        def _attempt(mode: str, fn) -> bool:
+            try:
+                fn()
+            except Exception as exc:
+                if mode.startswith("infer_true") and _is_infer_true_disabled_error(exc):
+                    self._infer_true_disabled = True
+                    self._infer_true_disable_reason = str(exc)
+                    if add_debug:
+                        logger.debug("mem0 infer_true disabled due to compatibility error: {}", self._infer_true_disable_reason)
+                return False
+            self.last_add_mode = mode
+            after_count = self.get_all_count(limit=200) if verify_write or add_debug else -1
+            if add_debug:
+                logger.debug("mem0 add_text mode={} before={} after={}", mode, before_count, after_count)
+            if verify_write and after_count <= before_count:
+                return False
+            return True
+
+        infer_true_allowed = force_infer_true or (self.mode == "hosted" and not self._infer_true_disabled)
+        if infer_true_allowed:
+            # Hosted mem0 can usually use infer=True end to end.
+            if _attempt("infer_true", lambda: self.client.add(messages, infer=True, **kwargs)):
+                return True
+            # Fallback for older hosted client signatures.
+            if _attempt("default_signature", lambda: self.client.add(messages, **kwargs)):
+                return True
+            if _attempt("infer_false_fallback", lambda: self.client.add(messages, infer=False, **kwargs)):
+                return True
+        else:
+            # OSS/local mem0 path: prefer infer=False to avoid LLM quota/auth coupling.
+            if _attempt("infer_false_primary", lambda: self.client.add(messages, infer=False, **kwargs)):
+                return True
+            if force_infer_true and _attempt("infer_true_forced", lambda: self.client.add(messages, infer=True, **kwargs)):
+                return True
+            if _attempt("default_signature_fallback", lambda: self.client.add(messages, **kwargs)):
+                return True
+
+        if self._activate_local_fallback(reason="add_text write verification failed") and self.client:
+            if _attempt("infer_false_local_fallback", lambda: self.client.add(messages, infer=False, **kwargs)):
+                return True
+            if force_infer_true and _attempt("infer_true_local_forced", lambda: self.client.add(messages, infer=True, **kwargs)):
+                return True
+            if _attempt("default_signature_local_fallback", lambda: self.client.add(messages, **kwargs)):
+                return True
+        return False
+
+    def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 6,
+        allow_get_all_fallback: bool = True,
+        allow_history_fallback: bool = False,
+        allowed_sources: set[str] | None = None,
+        max_summary_chars: int = 280,
+        reject_blob_like: bool = True,
+        return_stats: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], dict[str, int]]:
         if not self.enabled or not self.client or not query.strip():
-            return []
+            empty_stats = {
+                "source_vector": 0,
+                "source_get_all": 0,
+                "source_history": 0,
+                "rejected_blob_like": 0,
+            }
+            return ([], empty_stats) if return_stats else []
         kwargs: dict[str, Any] = {"user_id": self.user_id, "limit": max(1, top_k)}
         try:
             raw = self.client.search(query=query, **kwargs)
@@ -702,7 +1069,13 @@ class _Mem0Adapter:
             try:
                 raw = self.client.search(query, **kwargs)
             except Exception:
-                return []
+                empty_stats = {
+                    "source_vector": 0,
+                    "source_get_all": 0,
+                    "source_history": 0,
+                    "rejected_blob_like": 0,
+                }
+                return ([], empty_stats) if return_stats else []
         except Exception as exc:
             if self._activate_local_fallback(reason=f"search failed: {exc}") and self.client:
                 try:
@@ -711,52 +1084,67 @@ class _Mem0Adapter:
                     try:
                         raw = self.client.search(query, **kwargs)
                     except Exception:
-                        return []
+                        empty_stats = {
+                            "source_vector": 0,
+                            "source_get_all": 0,
+                            "source_history": 0,
+                            "rejected_blob_like": 0,
+                        }
+                        return ([], empty_stats) if return_stats else []
                 except Exception:
-                    return []
+                    empty_stats = {
+                        "source_vector": 0,
+                        "source_get_all": 0,
+                        "source_history": 0,
+                        "rejected_blob_like": 0,
+                    }
+                    return ([], empty_stats) if return_stats else []
             else:
-                return []
+                empty_stats = {
+                    "source_vector": 0,
+                    "source_get_all": 0,
+                    "source_history": 0,
+                    "rejected_blob_like": 0,
+                }
+                return ([], empty_stats) if return_stats else []
 
         out: list[dict[str, Any]] = []
+        source_counts = {
+            "source_vector": 0,
+            "source_get_all": 0,
+            "source_history": 0,
+            "rejected_blob_like": 0,
+        }
         for item in self._rows(raw):
-            summary = str(item.get("memory") or item.get("text") or item.get("summary") or "").strip()
-            if not summary:
-                continue
-            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-            timestamp = (
-                item.get("updated_at")
-                or item.get("created_at")
-                or metadata.get("timestamp")
-                or ""
+            normalized = self._row_to_item(item)
+            if normalized is not None:
+                if isinstance(normalized.get("retrieval_reason"), dict):
+                    normalized["retrieval_reason"]["backend"] = "mem0_vector"
+                out.append(normalized)
+        if out:
+            source_counts["source_vector"] = len(out)
+        if not out and allow_get_all_fallback:
+            out, rejected = self._fallback_search_via_get_all(
+                query,
+                top_k=top_k,
+                allowed_sources=allowed_sources,
+                max_summary_chars=max_summary_chars,
+                reject_blob_like=reject_blob_like,
             )
-            event_type = str(metadata.get("event_type", "fact"))
-            try:
-                score = float(item.get("score", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                score = 0.0
-            canonical_id = str(item.get("id") or hashlib.sha1(summary.encode("utf-8")).hexdigest())
-            out.append(
-                {
-                    "id": canonical_id,
-                    "timestamp": str(timestamp),
-                    "type": event_type,
-                    "summary": summary,
-                    "entities": metadata.get("entities", []),
-                    "score": score,
-                    "retrieval_reason": {
-                        "provider": "mem0",
-                        "backend": "mem0",
-                        "semantic": round(score, 4),
-                        "recency": 0.0,
-                    },
-                    "provenance": {
-                        "canonical_id": canonical_id,
-                        "source_span": metadata.get("source_span"),
-                    },
-                }
+            source_counts["source_get_all"] = len(out)
+            source_counts["rejected_blob_like"] += int(rejected)
+        if not out and allow_history_fallback:
+            out, rejected = self._fallback_search_via_history_db(
+                query,
+                top_k=top_k,
+                max_summary_chars=max_summary_chars,
+                reject_blob_like=reject_blob_like,
             )
+            source_counts["source_history"] = len(out)
+            source_counts["rejected_blob_like"] += int(rejected)
         out.sort(key=lambda item: float(item.get("score", 0.0)), reverse=True)
-        return out[: max(1, top_k)]
+        sliced = out[: max(1, top_k)]
+        return (sliced, source_counts) if return_stats else sliced
 
     def update(self, memory_id: str, text: str, *, metadata: dict[str, Any] | None = None) -> bool:
         if not self.enabled or not self.client or not memory_id.strip() or not text.strip():
@@ -817,14 +1205,19 @@ class MemoryStore:
 
     PROFILE_KEYS = ("preferences", "stable_facts", "active_projects", "relationships", "constraints")
     EVENT_TYPES = {"preference", "fact", "task", "decision", "constraint", "relationship"}
+    MEMORY_TYPES = {"semantic", "episodic", "reflection"}
+    MEMORY_STABILITY = {"high", "medium", "low"}
     PROFILE_STATUS_ACTIVE = "active"
     PROFILE_STATUS_CONFLICTED = "conflicted"
     PROFILE_STATUS_STALE = "stale"
     CONFLICT_STATUS_OPEN = "open"
     CONFLICT_STATUS_NEEDS_USER = "needs_user"
     CONFLICT_STATUS_RESOLVED = "resolved"
+    EPISODIC_STATUS_OPEN = "open"
+    EPISODIC_STATUS_RESOLVED = "resolved"
+    ROLLOUT_MODES = {"enabled", "shadow", "disabled"}
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, rollout_overrides: dict[str, Any] | None = None):
         self.workspace = workspace
         self.persistence = MemoryPersistence(workspace)
         self.memory_dir = self.persistence.memory_dir
@@ -840,6 +1233,10 @@ class MemoryStore:
             utc_now_iso=self._utc_now_iso,
         )
         self.mem0 = _Mem0Adapter(workspace=workspace)
+        self.rollout = self._load_rollout_config()
+        if isinstance(rollout_overrides, dict):
+            self._apply_rollout_overrides(rollout_overrides)
+        self._ensure_vector_health()
 
     @staticmethod
     def _utc_now_iso() -> str:
@@ -879,6 +1276,537 @@ class MemoryStore:
         except ValueError:
             return None
 
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        value = str(text or "")
+        if not value:
+            return 0
+        return max(1, len(value) // 4)
+
+    @staticmethod
+    def _env_bool(name: str) -> bool | None:
+        raw = os.getenv(name)
+        if raw is None:
+            return None
+        normalized = str(raw).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    def _load_rollout_config(self) -> dict[str, Any]:
+        defaults: dict[str, Any] = {
+            "memory_rollout_mode": "enabled",
+            "memory_type_separation_enabled": True,
+            "memory_router_enabled": True,
+            "memory_reflection_enabled": True,
+            "memory_shadow_mode": False,
+            "memory_shadow_sample_rate": 0.2,
+            "memory_vector_health_enabled": True,
+            "memory_auto_reindex_on_empty_vector": True,
+            "memory_history_fallback_enabled": False,
+            "memory_fallback_allowed_sources": ["profile", "events", "mem0_get_all"],
+            "memory_fallback_max_summary_chars": 280,
+            "rollout_gates": {
+                "min_recall_at_k": 0.55,
+                "min_precision_at_k": 0.25,
+                "max_avg_memory_context_tokens": 1400.0,
+                "max_history_fallback_ratio": 0.05,
+            },
+        }
+        rollout = dict(defaults)
+
+        mode = str(rollout.get("memory_rollout_mode", "enabled")).strip().lower()
+        rollout["memory_rollout_mode"] = mode if mode in self.ROLLOUT_MODES else "enabled"
+
+        for key in (
+            "memory_type_separation_enabled",
+            "memory_router_enabled",
+            "memory_reflection_enabled",
+            "memory_shadow_mode",
+            "memory_vector_health_enabled",
+            "memory_auto_reindex_on_empty_vector",
+            "memory_history_fallback_enabled",
+        ):
+            rollout[key] = bool(rollout.get(key, defaults[key]))
+
+        allowed_sources = rollout.get("memory_fallback_allowed_sources", defaults["memory_fallback_allowed_sources"])
+        if not isinstance(allowed_sources, list):
+            allowed_sources = defaults["memory_fallback_allowed_sources"]
+        rollout["memory_fallback_allowed_sources"] = [
+            str(item).strip().lower()
+            for item in allowed_sources
+            if str(item).strip()
+        ] or list(defaults["memory_fallback_allowed_sources"])
+
+        try:
+            max_summary_chars = int(rollout.get("memory_fallback_max_summary_chars", defaults["memory_fallback_max_summary_chars"]))
+        except (TypeError, ValueError):
+            max_summary_chars = int(defaults["memory_fallback_max_summary_chars"])
+        rollout["memory_fallback_max_summary_chars"] = max(80, min(max_summary_chars, 4000))
+
+        try:
+            sample_rate = float(rollout.get("memory_shadow_sample_rate", 0.2))
+        except (TypeError, ValueError):
+            sample_rate = 0.2
+        rollout["memory_shadow_sample_rate"] = min(max(sample_rate, 0.0), 1.0)
+
+        mode_env = os.getenv("NANOBOT_MEMORY_ROLLOUT_MODE")
+        if mode_env:
+            env_mode = mode_env.strip().lower()
+            if env_mode in self.ROLLOUT_MODES:
+                rollout["memory_rollout_mode"] = env_mode
+        env_overrides = {
+            "memory_type_separation_enabled": self._env_bool("NANOBOT_MEMORY_TYPE_SEPARATION_ENABLED"),
+            "memory_router_enabled": self._env_bool("NANOBOT_MEMORY_ROUTER_ENABLED"),
+            "memory_reflection_enabled": self._env_bool("NANOBOT_MEMORY_REFLECTION_ENABLED"),
+            "memory_shadow_mode": self._env_bool("NANOBOT_MEMORY_SHADOW_MODE"),
+            "memory_vector_health_enabled": self._env_bool("NANOBOT_MEMORY_VECTOR_HEALTH_ENABLED"),
+            "memory_auto_reindex_on_empty_vector": self._env_bool("NANOBOT_MEMORY_AUTO_REINDEX_ON_EMPTY_VECTOR"),
+            "memory_history_fallback_enabled": self._env_bool("NANOBOT_MEMORY_HISTORY_FALLBACK_ENABLED"),
+        }
+        for key, value in env_overrides.items():
+            if value is not None:
+                rollout[key] = value
+
+        sample_env = os.getenv("NANOBOT_MEMORY_SHADOW_SAMPLE_RATE")
+        if sample_env is not None:
+            try:
+                rollout["memory_shadow_sample_rate"] = min(max(float(sample_env), 0.0), 1.0)
+            except (TypeError, ValueError):
+                pass
+        fallback_sources_env = os.getenv("NANOBOT_MEMORY_FALLBACK_ALLOWED_SOURCES")
+        if fallback_sources_env is not None:
+            parsed = [
+                item.strip().lower()
+                for item in fallback_sources_env.split(",")
+                if item.strip()
+            ]
+            if parsed:
+                rollout["memory_fallback_allowed_sources"] = parsed
+        fallback_len_env = os.getenv("NANOBOT_MEMORY_FALLBACK_MAX_SUMMARY_CHARS")
+        if fallback_len_env is not None:
+            try:
+                rollout["memory_fallback_max_summary_chars"] = max(80, min(int(fallback_len_env), 4000))
+            except (TypeError, ValueError):
+                pass
+        return rollout
+
+    def get_rollout_status(self) -> dict[str, Any]:
+        return dict(self.rollout)
+
+    def _apply_rollout_overrides(self, overrides: dict[str, Any]) -> None:
+        if not overrides:
+            return
+        mode = str(overrides.get("memory_rollout_mode", self.rollout.get("memory_rollout_mode", "enabled"))).strip().lower()
+        if mode in self.ROLLOUT_MODES:
+            self.rollout["memory_rollout_mode"] = mode
+        for key in (
+            "memory_type_separation_enabled",
+            "memory_router_enabled",
+            "memory_reflection_enabled",
+            "memory_shadow_mode",
+            "memory_vector_health_enabled",
+            "memory_auto_reindex_on_empty_vector",
+            "memory_history_fallback_enabled",
+        ):
+            if key in overrides:
+                self.rollout[key] = bool(overrides[key])
+        if "memory_fallback_allowed_sources" in overrides and isinstance(overrides.get("memory_fallback_allowed_sources"), list):
+            parsed = [
+                str(item).strip().lower()
+                for item in overrides.get("memory_fallback_allowed_sources", [])
+                if str(item).strip()
+            ]
+            if parsed:
+                self.rollout["memory_fallback_allowed_sources"] = parsed
+        if "memory_fallback_max_summary_chars" in overrides:
+            try:
+                self.rollout["memory_fallback_max_summary_chars"] = max(
+                    80,
+                    min(int(overrides["memory_fallback_max_summary_chars"]), 4000),
+                )
+            except (TypeError, ValueError):
+                pass
+        if "memory_shadow_sample_rate" in overrides:
+            try:
+                rate = float(overrides["memory_shadow_sample_rate"])
+                self.rollout["memory_shadow_sample_rate"] = min(max(rate, 0.0), 1.0)
+            except (TypeError, ValueError):
+                pass
+        if isinstance(overrides.get("rollout_gates"), dict):
+            gates = self.rollout.get("rollout_gates")
+            if not isinstance(gates, dict):
+                gates = {}
+            for key in ("min_recall_at_k", "min_precision_at_k", "max_avg_memory_context_tokens", "max_history_fallback_ratio"):
+                if key not in overrides["rollout_gates"]:
+                    continue
+                try:
+                    gates[key] = float(overrides["rollout_gates"][key])
+                except (TypeError, ValueError):
+                    continue
+            self.rollout["rollout_gates"] = gates
+
+    @staticmethod
+    def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+        lowered = str(text or "").lower()
+        return any(needle in lowered for needle in needles)
+
+    @staticmethod
+    def _infer_retrieval_intent(query: str) -> str:
+        text = str(query or "").strip().lower()
+        if not text:
+            return "fact_lookup"
+
+        debug_markers = (
+            "what happened",
+            "last time",
+            "failed",
+            "failure",
+            "error",
+            "incident",
+            "debug",
+            "timeline",
+            "yesterday",
+            "what did we try",
+        )
+        reflection_markers = ("reflect", "reflection", "lesson", "learned", "retrospective")
+        planning_markers = (
+            "plan",
+            "next step",
+            "roadmap",
+            "todo",
+            "should we",
+            "what should",
+            "task",
+            "tasks",
+            "decision",
+            "decisions",
+            "in progress",
+            "still open",
+            "resolved",
+            "completed",
+            "closed",
+        )
+        architecture_markers = ("architecture", "architectural", "design decision", "memory architecture")
+        constraints_markers = ("constraint", "must", "cannot", "before running commands")
+        conflict_markers = ("conflict", "needs_user", "unresolved decision")
+        rollout_markers = ("rollout", "router", "shadow mode", "memory behavior enabled")
+
+        if any(marker in text for marker in rollout_markers):
+            return "rollout_status"
+        if any(marker in text for marker in conflict_markers):
+            return "conflict_review"
+        if any(marker in text for marker in constraints_markers):
+            return "constraints_lookup"
+        if any(marker in text for marker in reflection_markers):
+            return "reflection"
+        if any(marker in text for marker in debug_markers):
+            return "debug_history"
+        if any(marker in text for marker in architecture_markers):
+            return "planning"
+        if any(marker in text for marker in planning_markers):
+            return "planning"
+        return "fact_lookup"
+
+    @staticmethod
+    def _retrieval_policy(intent: str) -> dict[str, Any]:
+        policy = {
+            "fact_lookup": {
+                "candidate_multiplier": 3,
+                "half_life_days": 120.0,
+                "type_boost": {"semantic": 0.18, "episodic": -0.05, "reflection": -0.12},
+            },
+            "debug_history": {
+                "candidate_multiplier": 4,
+                "half_life_days": 21.0,
+                "type_boost": {"semantic": -0.04, "episodic": 0.22, "reflection": -0.1},
+            },
+            "planning": {
+                "candidate_multiplier": 3,
+                "half_life_days": 45.0,
+                "type_boost": {"semantic": 0.1, "episodic": 0.08, "reflection": -0.06},
+            },
+            "reflection": {
+                "candidate_multiplier": 3,
+                "half_life_days": 60.0,
+                "type_boost": {"semantic": 0.03, "episodic": -0.03, "reflection": 0.2},
+            },
+            "constraints_lookup": {
+                "candidate_multiplier": 4,
+                "half_life_days": 180.0,
+                "type_boost": {"semantic": 0.24, "episodic": -0.1, "reflection": -0.14},
+            },
+            "conflict_review": {
+                "candidate_multiplier": 4,
+                "half_life_days": 90.0,
+                "type_boost": {"semantic": 0.15, "episodic": 0.02, "reflection": -0.08},
+            },
+            "rollout_status": {
+                "candidate_multiplier": 2,
+                "half_life_days": 365.0,
+                "type_boost": {"semantic": 0.3, "episodic": -0.16, "reflection": -0.2},
+            },
+        }
+        return policy.get(intent, policy["fact_lookup"])
+
+    @staticmethod
+    def _query_routing_hints(query: str) -> dict[str, Any]:
+        text = str(query or "").strip().lower()
+        open_markers = ("still open", "open task", "open tasks", "pending", "in progress", "unresolved", "needs user")
+        resolved_markers = ("resolved", "completed", "closed", "finished", "done")
+        planning_markers = ("plan", "next step", "roadmap", "todo", "planning")
+        architecture_markers = ("architecture", "architectural", "design decision", "memory architecture")
+        task_decision_markers = ("task", "tasks", "decision", "decisions")
+
+        requires_open = any(marker in text for marker in open_markers)
+        requires_resolved = any(marker in text for marker in resolved_markers)
+        if requires_open and requires_resolved:
+            # If query mixes both terms, prefer broader task/decision focus without status hard-filter.
+            requires_open = False
+            requires_resolved = False
+
+        focus_architecture = any(marker in text for marker in architecture_markers)
+        focus_planning = focus_architecture or any(marker in text for marker in planning_markers)
+        focus_task_decision = requires_open or requires_resolved or any(marker in text for marker in task_decision_markers)
+
+        return {
+            "requires_open": requires_open,
+            "requires_resolved": requires_resolved,
+            "focus_planning": focus_planning,
+            "focus_architecture": focus_architecture,
+            "focus_task_decision": focus_task_decision,
+        }
+
+    def _status_matches_query_hint(
+        self,
+        *,
+        status: str,
+        summary: str,
+        requires_open: bool,
+        requires_resolved: bool,
+    ) -> bool:
+        status_norm = str(status or "").strip().lower()
+        summary_text = str(summary or "")
+        open_statuses = {"open", "in_progress", "pending", "active", "needs_user"}
+        resolved_statuses = {"resolved", "completed", "closed", "done", "superseded"}
+        summary_is_resolved = self._is_resolved_task_or_decision(summary_text)
+
+        if requires_open:
+            if status_norm in resolved_statuses:
+                return False
+            if status_norm in open_statuses:
+                return True
+            return not summary_is_resolved
+        if requires_resolved:
+            if status_norm in resolved_statuses:
+                return True
+            if status_norm in open_statuses:
+                return False
+            return summary_is_resolved
+        return True
+
+    def _memory_type_for_item(self, item: dict[str, Any]) -> str:
+        memory_type = str(item.get("memory_type", "")).strip().lower()
+        if memory_type in self.MEMORY_TYPES:
+            return memory_type
+        event_type = str(item.get("type", "")).strip().lower()
+        if event_type in {"task", "decision"}:
+            return "episodic"
+        if event_type in {"preference", "fact", "constraint", "relationship"}:
+            return "semantic"
+        return "episodic"
+
+    def _recency_signal(self, timestamp: str, *, half_life_days: float) -> float:
+        ts = self._to_datetime(timestamp)
+        if ts is None:
+            return 0.0
+        now = datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age_days = max((now - ts).total_seconds() / 86400.0, 0.0)
+        if half_life_days <= 0:
+            return 0.0
+        decay = math.exp(-math.log(2) * age_days / half_life_days)
+        return max(min(decay, 1.0), 0.0)
+
+    def _default_topic_for_event_type(self, event_type: str) -> str:
+        topic_by_event_type = {
+            "preference": "user_preference",
+            "fact": "knowledge",
+            "task": "task_progress",
+            "decision": "decision_log",
+            "constraint": "constraint",
+            "relationship": "relationship",
+        }
+        return topic_by_event_type.get(str(event_type or "").lower(), "general")
+
+    def _classify_memory_type(
+        self,
+        *,
+        event_type: str,
+        summary: str,
+        source: str,
+    ) -> tuple[str, str, bool]:
+        event_kind = str(event_type or "fact").lower()
+        text = str(summary or "")
+        source_norm = str(source or "chat").strip().lower() or "chat"
+
+        if source_norm == "reflection":
+            return "reflection", "medium", False
+
+        semantic_default = {"preference", "fact", "constraint", "relationship"}
+        episodic_default = {"task", "decision"}
+        memory_type = "semantic" if event_kind in semantic_default else "episodic"
+        if event_kind in episodic_default:
+            memory_type = "episodic"
+
+        incident_markers = (
+            "failed",
+            "error",
+            "issue",
+            "incident",
+            "debug",
+            "tried",
+            "attempt",
+            "fix",
+            "resolved",
+            "yesterday",
+            "today",
+            "last time",
+        )
+        causal_markers = ("because", "due to", "after", "when", "since")
+        has_incident = self._contains_any(text, incident_markers)
+        has_causal = self._contains_any(text, causal_markers)
+        is_mixed = memory_type == "semantic" and has_incident and has_causal
+
+        if memory_type == "semantic":
+            stability = "high"
+            if has_incident:
+                stability = "medium"
+        elif memory_type == "reflection":
+            stability = "medium"
+        else:
+            stability = "low" if has_incident else "medium"
+        return memory_type, stability, is_mixed
+
+    def _distill_semantic_summary(self, summary: str) -> str:
+        text = re.sub(r"\s+", " ", str(summary or "").strip())
+        if not text:
+            return ""
+        splitters = (" because ", " due to ", " after ", " when ", " since ")
+        lowered = text.lower()
+        cut = len(text)
+        for marker in splitters:
+            idx = lowered.find(marker)
+            if idx >= 0:
+                cut = min(cut, idx)
+        distilled = text[:cut].strip(" .;:-")
+        if len(distilled) < 12:
+            return text
+        return distilled
+
+    def _normalize_memory_metadata(
+        self,
+        metadata: dict[str, Any] | None,
+        *,
+        event_type: str,
+        summary: str,
+        source: str,
+    ) -> tuple[dict[str, Any], bool]:
+        payload = dict(metadata or {})
+        memory_type, default_stability, is_mixed = self._classify_memory_type(
+            event_type=event_type,
+            summary=summary,
+            source=source,
+        )
+
+        topic = str(payload.get("topic", "")).strip() or self._default_topic_for_event_type(event_type)
+        raw_type = str(payload.get("memory_type", "")).strip().lower()
+        if raw_type in self.MEMORY_TYPES:
+            memory_type = raw_type
+
+        stability = str(payload.get("stability", default_stability)).strip().lower()
+        if stability not in self.MEMORY_STABILITY:
+            stability = default_stability
+
+        confidence = min(max(self._safe_float(payload.get("confidence"), 0.7), 0.0), 1.0)
+        timestamp = str(payload.get("timestamp", "")).strip() or self._utc_now_iso()
+        ttl_days = payload.get("ttl_days")
+        if not isinstance(ttl_days, int) or ttl_days <= 0:
+            ttl_days = None
+        evidence_refs = payload.get("evidence_refs")
+        if not isinstance(evidence_refs, list):
+            evidence_refs = []
+        evidence_refs = [str(x).strip() for x in evidence_refs if str(x).strip()]
+
+        reflection_safety_downgraded = bool(payload.get("reflection_safety_downgraded"))
+        if memory_type == "reflection":
+            # Reflection memories must be grounded to avoid self-reinforcing hallucinations.
+            if not evidence_refs:
+                memory_type = "episodic"
+                stability = "low"
+                reflection_safety_downgraded = True
+            elif ttl_days is None:
+                ttl_days = 30
+
+        return {
+            "memory_type": memory_type,
+            "topic": topic,
+            "stability": stability,
+            "source": str(source or "chat").strip().lower() or "chat",
+            "confidence": confidence,
+            "timestamp": timestamp,
+            "ttl_days": ttl_days,
+            "evidence_refs": evidence_refs,
+            "reflection_safety_downgraded": reflection_safety_downgraded,
+        }, is_mixed
+
+    def _event_mem0_write_plan(self, event: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        summary = str(event.get("summary", "")).strip()
+        if not summary:
+            return []
+        event_type = str(event.get("type", "fact"))
+        base_source = str(event.get("source", "chat"))
+        metadata, is_mixed = self._normalize_memory_metadata(
+            event.get("metadata") if isinstance(event.get("metadata"), dict) else None,
+            event_type=event_type,
+            summary=summary,
+            source=base_source,
+        )
+        merged = {
+            **metadata,
+            "event_type": event_type,
+            "entities": self._to_str_list(event.get("entities")),
+            "source_span": event.get("source_span"),
+            "channel": str(event.get("channel", "")),
+            "chat_id": str(event.get("chat_id", "")),
+            "canonical_id": str(event.get("canonical_id") or event.get("id", "")),
+            "status": event.get("status"),
+            "supersedes_event_id": event.get("supersedes_event_id"),
+            "supersedes_at": event.get("supersedes_at"),
+        }
+        writes: list[tuple[str, dict[str, Any]]] = []
+
+        if is_mixed:
+            episodic_meta = dict(merged)
+            episodic_meta["memory_type"] = "episodic"
+            episodic_meta["stability"] = "low"
+            writes.append((summary, episodic_meta))
+
+            semantic_summary = self._distill_semantic_summary(summary)
+            if semantic_summary:
+                semantic_meta = dict(merged)
+                semantic_meta["memory_type"] = "semantic"
+                semantic_meta["stability"] = "high"
+                semantic_meta["dual_write_parent_id"] = episodic_meta.get("canonical_id")
+                writes.append((semantic_summary, semantic_meta))
+            return writes
+
+        writes.append((summary, merged))
+        return writes
+
     def _load_metrics(self) -> dict[str, Any]:
         data = self.persistence.read_json(self.metrics_file)
         if isinstance(data, dict):
@@ -889,29 +1817,520 @@ class MemoryStore:
             "consolidations": 0,
             "events_extracted": 0,
             "event_dedup_merges": 0,
+            "semantic_supersessions": 0,
             "retrieval_queries": 0,
             "retrieval_hits": 0,
+            "retrieval_candidates": 0,
+            "retrieval_returned": 0,
+            "retrieval_filtered_out": 0,
+            "retrieval_intent_fact_lookup": 0,
+            "retrieval_intent_debug_history": 0,
+            "retrieval_intent_planning": 0,
+            "retrieval_intent_reflection": 0,
+            "retrieval_intent_constraints_lookup": 0,
+            "retrieval_intent_conflict_review": 0,
+            "retrieval_intent_rollout_status": 0,
+            "retrieval_returned_semantic": 0,
+            "retrieval_returned_episodic": 0,
+            "retrieval_returned_reflection": 0,
+            "retrieval_returned_unknown": 0,
+            "retrieval_shadow_runs": 0,
+            "retrieval_shadow_overlap_count": 0,
+            "retrieval_shadow_overlap_sum": 0,
+            "retrieval_source_vector_count": 0,
+            "retrieval_source_get_all_count": 0,
+            "retrieval_source_history_count": 0,
+            "retrieval_rejected_blob_count": 0,
+            "vector_health_degraded_count": 0,
+            "vector_health_probe_runs": 0,
+            "vector_health_probe_vector_rows": 0,
+            "vector_health_probe_vector_points": 0,
+            "vector_health_probe_history_rows": 0,
+            "reindex_runs": 0,
+            "reindex_written": 0,
+            "reindex_failed": 0,
+            "mem0_add_mode_counts_infer_true": 0,
+            "mem0_add_mode_counts_default_signature": 0,
+            "mem0_add_mode_counts_infer_false_fallback": 0,
+            "mem0_add_mode_counts_infer_true_local_fallback": 0,
+            "mem0_add_mode_counts_default_signature_local_fallback": 0,
+            "mem0_add_mode_counts_infer_false_local_fallback": 0,
             "index_updates": 0,
             "conflicts_detected": 0,
             "messages_processed": 0,
             "user_messages_processed": 0,
             "user_corrections": 0,
             "profile_updates_applied": 0,
+            "memory_writes_total": 0,
+            "memory_writes_semantic": 0,
+            "memory_writes_episodic": 0,
+            "memory_writes_reflection": 0,
+            "memory_writes_dual": 0,
+            "memory_write_failures": 0,
+            "reflection_downgraded_no_evidence": 0,
+            "reflection_filtered_non_reflection_intent": 0,
+            "reflection_filtered_no_evidence": 0,
             "memory_context_calls": 0,
             "memory_context_tokens_total": 0,
             "memory_context_tokens_max": 0,
+            "memory_context_tokens_long_term_total": 0,
+            "memory_context_tokens_profile_total": 0,
+            "memory_context_tokens_semantic_total": 0,
+            "memory_context_tokens_episodic_total": 0,
+            "memory_context_tokens_reflection_total": 0,
+            "memory_context_intent_fact_lookup": 0,
+            "memory_context_intent_debug_history": 0,
+            "memory_context_intent_planning": 0,
+            "memory_context_intent_reflection": 0,
+            "memory_context_intent_constraints_lookup": 0,
+            "memory_context_intent_conflict_review": 0,
+            "memory_context_intent_rollout_status": 0,
             "last_updated": self._utc_now_iso(),
         }
 
     def _record_metric(self, key: str, delta: int = 1) -> None:
         self._record_metrics({key: delta})
 
+    def _persist_metrics(self, metrics: dict[str, Any]) -> None:
+        """Best-effort metrics write; never fail the runtime path."""
+        try:
+            self.persistence.write_json(self.metrics_file, metrics)
+        except Exception as exc:
+            logger.warning("Failed to persist memory metrics: {}", exc)
+
     def _record_metrics(self, deltas: dict[str, int]) -> None:
         metrics = self._load_metrics()
         for key, delta in deltas.items():
             metrics[key] = int(metrics.get(key, 0)) + int(delta)
         metrics["last_updated"] = self._utc_now_iso()
-        self.persistence.write_json(self.metrics_file, metrics)
+        self._persist_metrics(metrics)
+
+    def _set_metric_fields(self, fields: dict[str, Any]) -> None:
+        metrics = self._load_metrics()
+        for key, value in fields.items():
+            metrics[key] = value
+        metrics["last_updated"] = self._utc_now_iso()
+        self._persist_metrics(metrics)
+
+    @staticmethod
+    def _looks_blob_like_summary(summary: str) -> bool:
+        text = str(summary or "").strip()
+        if not text:
+            return True
+        lowered = text.lower()
+        blob_markers = (
+            "[runtime context]",
+            "/home/",
+            ".jsonl:",
+            "```",
+            "{",
+            "}",
+            "# memory",
+            "## ",
+        )
+        if any(marker in lowered for marker in blob_markers):
+            return True
+        if text.count("\n") >= 4:
+            return True
+        return False
+
+    @staticmethod
+    def _sanitize_mem0_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+        clean: dict[str, Any] = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                clean[key] = value
+                continue
+            if isinstance(value, list):
+                items: list[str | int | float | bool] = []
+                for item in value:
+                    if isinstance(item, (str, int, float, bool)):
+                        items.append(item)
+                    elif item is not None:
+                        items.append(str(item))
+                clean[key] = items
+                continue
+            clean[key] = str(value)
+        return clean
+
+    def _sanitize_mem0_text(self, text: str, *, allow_archival: bool = False) -> str:
+        value = str(text or "")
+        if not value.strip():
+            return ""
+        if "[Runtime Context]" in value:
+            value = value.split("[Runtime Context]", 1)[0]
+        value = re.sub(r"\s+", " ", value).strip()
+        max_chars = int(self.rollout.get("memory_fallback_max_summary_chars", 280) or 280)
+        if len(value) > max_chars and not allow_archival:
+            return ""
+        if len(value) > max_chars and allow_archival:
+            value = value[:max_chars].rstrip() + "..."
+        if self._looks_blob_like_summary(value):
+            return ""
+        return value
+
+    def _mem0_get_all_rows(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        if not self.mem0.enabled or not self.mem0.client:
+            return []
+        try:
+            raw = self.mem0.client.get_all(user_id=self.mem0.user_id, limit=max(1, limit))
+        except TypeError:
+            try:
+                raw = self.mem0.client.get_all(self.mem0.user_id, max(1, limit))
+            except Exception:
+                return []
+        except Exception:
+            return []
+        return self.mem0._rows(raw)
+
+    def _vector_points_count(self) -> int:
+        local_mem0_dir = self.mem0._local_mem0_dir or (self.workspace / "memory" / "mem0")
+        base = local_mem0_dir / "qdrant" / "collection"
+        if not base.exists() or not base.is_dir():
+            return 0
+        total = 0
+        for child in base.iterdir():
+            if not child.is_dir():
+                continue
+            storage = child / "storage.sqlite"
+            if not storage.exists():
+                continue
+            try:
+                conn = sqlite3.connect(storage)
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM points")
+                total += int(cur.fetchone()[0])
+                conn.close()
+            except Exception:
+                continue
+        return max(total, 0)
+
+    def _history_row_count(self) -> int:
+        local_mem0_dir = self.mem0._local_mem0_dir or (self.workspace / "memory" / "mem0")
+        history_db = local_mem0_dir / "history.db"
+        if not history_db.exists():
+            return 0
+        try:
+            conn = sqlite3.connect(history_db)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM history
+                WHERE COALESCE(is_deleted, 0) = 0
+                  AND COALESCE(new_memory, '') != ''
+                """
+            )
+            count = int(cur.fetchone()[0])
+            conn.close()
+            return max(count, 0)
+        except Exception:
+            return 0
+
+    def _event_compaction_key(self, event: dict[str, Any]) -> tuple[str, str, str, str]:
+        summary = self._norm_text(str(event.get("summary", "")))
+        event_type = str(event.get("type", "fact")).strip().lower() or "fact"
+        memory_type = str(event.get("memory_type", "episodic")).strip().lower() or "episodic"
+        topic = str(event.get("topic", "general")).strip().lower() or "general"
+        return (summary, event_type, memory_type, topic)
+
+    def _compact_events_for_reindex(self, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        if not events:
+            return [], {"before": 0, "after": 0, "superseded_dropped": 0, "duplicates_dropped": 0}
+
+        compacted: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        superseded_dropped = 0
+        duplicates_dropped = 0
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            status = str(event.get("status", "")).strip().lower()
+            if status == "superseded":
+                superseded_dropped += 1
+                continue
+            key = self._event_compaction_key(event)
+            if not key[0]:
+                continue
+            existing = compacted.get(key)
+            if existing is None:
+                compacted[key] = event
+                continue
+            old_ts = str(existing.get("timestamp", ""))
+            new_ts = str(event.get("timestamp", ""))
+            if new_ts >= old_ts:
+                compacted[key] = event
+            duplicates_dropped += 1
+
+        out = sorted(compacted.values(), key=lambda e: str(e.get("timestamp", "")))
+        return out, {
+            "before": len(events),
+            "after": len(out),
+            "superseded_dropped": superseded_dropped,
+            "duplicates_dropped": duplicates_dropped,
+        }
+
+    def reindex_from_structured_memory(
+        self,
+        *,
+        max_events: int | None = None,
+        reset_existing: bool = False,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        if not self.mem0.enabled:
+            result = {"ok": False, "reason": "mem0_disabled", "written": 0, "failed": 0}
+            self._set_metric_fields({"last_reindex_at": self._utc_now_iso(), "last_reindex_result": result})
+            return result
+
+        reset_result: dict[str, Any] = {"requested": bool(reset_existing), "ok": True, "reason": "", "deleted_estimate": 0}
+        if reset_existing:
+            ok, reason, deleted_estimate = self.mem0.delete_all_user_memories()
+            reset_result = {
+                "requested": True,
+                "ok": bool(ok),
+                "reason": str(reason),
+                "deleted_estimate": int(deleted_estimate),
+            }
+            if not ok:
+                result = {
+                    "ok": False,
+                    "reason": "structured_reindex_reset_failed",
+                    "written": 0,
+                    "failed": 0,
+                    "events_indexed": 0,
+                    "reset": reset_result,
+                }
+                self._set_metric_fields({"last_reindex_at": self._utc_now_iso(), "last_reindex_result": result})
+                return result
+
+        profile = self.read_profile()
+        events = self.read_events(limit=max_events if isinstance(max_events, int) and max_events > 0 else None)
+        compaction_stats = {"before": len(events), "after": len(events), "superseded_dropped": 0, "duplicates_dropped": 0}
+        if compact:
+            events, compaction_stats = self._compact_events_for_reindex(events)
+        written = 0
+        failed = 0
+        seen: set[tuple[str, str, str]] = set()
+
+        section_topic = {
+            "preferences": "user_preference",
+            "stable_facts": "knowledge",
+            "active_projects": "project",
+            "relationships": "relationship",
+            "constraints": "constraint",
+        }
+        section_event_type = {
+            "preferences": "preference",
+            "stable_facts": "fact",
+            "active_projects": "fact",
+            "relationships": "relationship",
+            "constraints": "constraint",
+        }
+
+        for section in self.PROFILE_KEYS:
+            values = profile.get(section, [])
+            if not isinstance(values, list):
+                continue
+            for value in values:
+                summary = self._sanitize_mem0_text(str(value), allow_archival=False)
+                if not summary:
+                    continue
+                metadata = self._sanitize_mem0_metadata(
+                    {
+                        "memory_type": "semantic",
+                        "topic": section_topic.get(section, "general"),
+                        "stability": "high",
+                        "source": "profile",
+                        "event_type": section_event_type.get(section, "fact"),
+                        "status": "active",
+                        "timestamp": profile.get("last_verified_at") or self._utc_now_iso(),
+                    }
+                )
+                key = (self._norm_text(summary), str(metadata.get("memory_type", "")), str(metadata.get("topic", "")))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if self.mem0.add_text(summary, metadata=metadata):
+                    written += 1
+                else:
+                    failed += 1
+
+        for event in events:
+            for text, raw_metadata in self._event_mem0_write_plan(event):
+                summary = self._sanitize_mem0_text(
+                    text,
+                    allow_archival=bool(raw_metadata.get("archival")),
+                )
+                if not summary:
+                    continue
+                metadata = self._sanitize_mem0_metadata(dict(raw_metadata))
+                metadata["source"] = "events"
+                key = (
+                    self._norm_text(summary),
+                    str(metadata.get("memory_type", "")),
+                    str(metadata.get("topic", "")),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                if self.mem0.add_text(summary, metadata=metadata):
+                    written += 1
+                else:
+                    failed += 1
+
+        flushed = self.mem0.flush_vector_store()
+        if flushed:
+            self.mem0.reopen_client()
+
+        vector_points_after = self._vector_points_count()
+        mem0_rows_after = len(self._mem0_get_all_rows(limit=500))
+        ok = failed == 0 and (vector_points_after > 0 or mem0_rows_after > 0)
+        result = {
+            "ok": ok,
+            "reason": "structured_reindex",
+            "written": written,
+            "failed": failed,
+            "events_indexed": len(events),
+            "compacted": bool(compact),
+            "events_before_compaction": int(compaction_stats.get("before", len(events))),
+            "events_after_compaction": int(compaction_stats.get("after", len(events))),
+            "events_superseded_dropped": int(compaction_stats.get("superseded_dropped", 0)),
+            "events_duplicates_dropped": int(compaction_stats.get("duplicates_dropped", 0)),
+            "reset": reset_result,
+            "vector_points_after": vector_points_after,
+            "mem0_get_all_after": mem0_rows_after,
+            "mem0_add_mode": str(self.mem0.last_add_mode),
+            "flush_applied": flushed,
+        }
+        self._record_metrics(
+            {
+                "reindex_runs": 1,
+                "reindex_written": written,
+                "reindex_failed": failed,
+                "reindex_events_compacted": int(compaction_stats.get("before", len(events)) - compaction_stats.get("after", len(events))),
+            }
+        )
+        self._set_metric_fields(
+            {
+                "last_reindex_at": self._utc_now_iso(),
+                "last_reindex_result": result,
+            }
+        )
+        return result
+
+    def seed_structured_corpus(self, *, profile_path: Path, events_path: Path) -> dict[str, Any]:
+        try:
+            profile_payload = json.loads(profile_path.read_text(encoding="utf-8"))
+            if not isinstance(profile_payload, dict):
+                raise ValueError("seed profile must be a JSON object")
+        except Exception as exc:
+            return {"ok": False, "reason": f"invalid_profile_seed:{exc}"}
+
+        seeded_profile = self.read_profile()
+        for key in self.PROFILE_KEYS:
+            incoming = profile_payload.get(key, [])
+            if isinstance(incoming, list):
+                seeded_profile[key] = [str(x).strip() for x in incoming if str(x).strip()]
+            else:
+                seeded_profile[key] = []
+        conflicts = profile_payload.get("conflicts", [])
+        seeded_profile["conflicts"] = conflicts if isinstance(conflicts, list) else []
+        seeded_profile["last_verified_at"] = self._utc_now_iso()
+        seeded_profile["updated_at"] = self._utc_now_iso()
+        seeded_profile.setdefault("meta", {key: {} for key in self.PROFILE_KEYS})
+        self.write_profile(seeded_profile)
+
+        seeded_events: list[dict[str, Any]] = []
+        try:
+            for line in events_path.read_text(encoding="utf-8").splitlines():
+                text = str(line).strip()
+                if not text:
+                    continue
+                payload = json.loads(text)
+                if not isinstance(payload, dict):
+                    continue
+                coerced = self._coerce_event(payload, source_span=[0, 0])
+                if coerced:
+                    seeded_events.append(coerced)
+        except Exception as exc:
+            return {"ok": False, "reason": f"invalid_events_seed:{exc}"}
+
+        self.persistence.write_jsonl(self.events_file, seeded_events)
+        result = self.reindex_from_structured_memory(reset_existing=True, compact=True)
+        return {
+            "ok": bool(result.get("ok")),
+            "reason": "seeded_structured_corpus",
+            "seeded_profile_items": sum(len(self._to_str_list(seeded_profile.get(k))) for k in self.PROFILE_KEYS),
+            "seeded_events": len(seeded_events),
+            "reindex": result,
+        }
+
+    def _ensure_vector_health(self) -> None:
+        if not bool(self.rollout.get("memory_vector_health_enabled", True)):
+            return
+        if not self.mem0.enabled:
+            return
+        vector_rows = len(self._mem0_get_all_rows(limit=25))
+        vector_points = self._vector_points_count()
+        history_rows = self._history_row_count()
+        # Explicit probe requested in rollout plan.
+        _probe_result = self.mem0.search("__health__", top_k=1, allow_history_fallback=False)
+        degraded = history_rows > 0 and vector_rows == 0 and vector_points == 0
+        self._record_metrics(
+            {
+                "vector_health_probe_runs": 1,
+                "vector_health_probe_vector_rows": vector_rows,
+                "vector_health_probe_vector_points": vector_points,
+                "vector_health_probe_history_rows": history_rows,
+            }
+        )
+        self._set_metric_fields(
+            {
+                "vector_health_last_checked_at": self._utc_now_iso(),
+                "vector_health_last_state": {
+                    "vector_rows": vector_rows,
+                    "vector_points": vector_points,
+                    "history_rows": history_rows,
+                    "degraded": degraded,
+                },
+            }
+        )
+        if not degraded:
+            return
+        self._record_metric("vector_health_degraded_count", 1)
+        if not bool(self.rollout.get("memory_auto_reindex_on_empty_vector", True)):
+            return
+        metrics = self._load_metrics()
+        last_reason = str(metrics.get("last_reindex_reason", ""))
+        if last_reason == "vector_health_degraded":
+            return
+        result = self.reindex_from_structured_memory()
+        if not bool(result.get("ok")):
+            self._set_metric_fields({"vector_health_hard_degraded": True})
+        self._set_metric_fields(
+            {
+                "last_reindex_reason": "vector_health_degraded",
+                "last_reindex_result": result,
+            }
+        )
+
+    def _record_mem0_write_metric(self, memory_type: str, *, dual: bool = False) -> None:
+        normalized = str(memory_type or "").strip().lower()
+        deltas: dict[str, int] = {"memory_writes_total": 1}
+        if normalized == "semantic":
+            deltas["memory_writes_semantic"] = 1
+        elif normalized == "reflection":
+            deltas["memory_writes_reflection"] = 1
+        else:
+            deltas["memory_writes_episodic"] = 1
+        if dual:
+            deltas["memory_writes_dual"] = 1
+        self._record_metrics(deltas)
+        add_mode = str(self.mem0.last_add_mode or "").strip()
+        if add_mode:
+            self._record_metric(f"mem0_add_mode_counts_{add_mode}", 1)
+            self._set_metric_fields({"mem0_last_add_mode": add_mode})
 
     def get_metrics(self) -> dict[str, Any]:
         return self._load_metrics()
@@ -927,11 +2346,27 @@ class MemoryStore:
         memory_context_calls = max(int(metrics.get("memory_context_calls", 0)), 0)
         memory_context_tokens_total = max(int(metrics.get("memory_context_tokens_total", 0)), 0)
         memory_context_tokens_max = max(int(metrics.get("memory_context_tokens_max", 0)), 0)
+        retrieval_shadow_overlap_count = max(int(metrics.get("retrieval_shadow_overlap_count", 0)), 0)
+        retrieval_shadow_overlap_sum = max(int(metrics.get("retrieval_shadow_overlap_sum", 0)), 0)
+        source_vector = max(int(metrics.get("retrieval_source_vector_count", 0)), 0)
+        source_get_all = max(int(metrics.get("retrieval_source_get_all_count", 0)), 0)
+        source_history = max(int(metrics.get("retrieval_source_history_count", 0)), 0)
+        source_total = max(source_vector + source_get_all + source_history, 0)
+        vector_points_count = self._vector_points_count()
+        mem0_get_all_count = len(self._mem0_get_all_rows(limit=500))
+        history_rows_count = self._history_row_count()
+        vector_health_state = "degraded" if (history_rows_count > 0 and vector_points_count == 0 and mem0_get_all_count == 0) else "healthy"
 
         retrieval_hit_rate = (retrieval_hits / retrieval_queries) if retrieval_queries else 0.0
         contradiction_rate_per_100 = (conflicts_detected * 100.0 / messages_processed) if messages_processed else 0.0
         user_correction_rate_per_100 = (user_corrections * 100.0 / user_messages_processed) if user_messages_processed else 0.0
         avg_memory_context_tokens = (memory_context_tokens_total / memory_context_calls) if memory_context_calls else 0.0
+        avg_shadow_overlap = (
+            (retrieval_shadow_overlap_sum / 1000.0) / retrieval_shadow_overlap_count
+            if retrieval_shadow_overlap_count
+            else 0.0
+        )
+        history_fallback_ratio = (source_history / source_total) if source_total else 0.0
 
         return {
             "metrics": metrics,
@@ -941,11 +2376,19 @@ class MemoryStore:
                 "user_correction_rate_per_100_user_messages": round(user_correction_rate_per_100, 4),
                 "avg_memory_context_tokens": round(avg_memory_context_tokens, 2),
                 "max_memory_context_tokens": memory_context_tokens_max,
+                "avg_shadow_overlap": round(avg_shadow_overlap, 4),
+                "history_fallback_ratio": round(history_fallback_ratio, 4),
             },
             "backend": {
                 "mem0_enabled": self.mem0.enabled,
                 "mem0_mode": self.mem0.mode,
+                "vector_points_count": vector_points_count,
+                "mem0_get_all_count": mem0_get_all_count,
+                "history_rows_count": history_rows_count,
+                "vector_health_state": vector_health_state,
+                "mem0_add_mode": str(metrics.get("mem0_last_add_mode", "")),
             },
+            "rollout": self.get_rollout_status(),
         }
 
     def evaluate_retrieval_cases(
@@ -960,6 +2403,11 @@ class MemoryStore:
         - query: str (required)
         - expected_ids: list[str] (optional)
         - expected_any: list[str] substrings expected in retrieved summaries (optional)
+        - expected_topics: list[str] expected topic substrings (optional)
+        - expected_memory_types: list[str] expected memory_type values (optional)
+        - expected_status_any: list[str] expected status substrings (optional)
+        - expected_any_mode: "substring" | "normalized" (optional)
+        - required_min_hits: int minimum matched expectations for full recall (optional)
         - top_k: int (optional)
         """
         valid_cases = [c for c in cases if isinstance(c, dict) and isinstance(c.get("query"), str) and c.get("query", "").strip()]
@@ -979,6 +2427,25 @@ class MemoryStore:
         total_retrieved_slots = 0
         evaluated: list[dict[str, Any]] = []
 
+        synonym_map = {
+            "failed": "fail",
+            "failure": "fail",
+            "failing": "fail",
+            "constraints": "constraint",
+            "resolved": "resolve",
+            "completed": "resolve",
+            "closed": "resolve",
+            "learned": "lesson",
+            "lessons": "lesson",
+            "updates": "update",
+            "corrected": "correct",
+        }
+
+        def _normalize_phrase(value: str) -> str:
+            tokens = [t for t in re.findall(r"[a-z0-9_]+", str(value or "").lower()) if t]
+            normalized = [synonym_map.get(tok, tok) for tok in tokens]
+            return " ".join(normalized)
+
         for case in valid_cases:
             query = str(case.get("query", "")).strip()
             top_k = int(case.get("top_k", default_top_k) or default_top_k)
@@ -986,6 +2453,19 @@ class MemoryStore:
 
             expected_ids = [str(x) for x in case.get("expected_ids", []) if isinstance(x, str) and x.strip()]
             expected_any = [str(x).lower() for x in case.get("expected_any", []) if isinstance(x, str) and x.strip()]
+            expected_topics = [str(x).strip().lower() for x in case.get("expected_topics", []) if isinstance(x, str) and x.strip()]
+            expected_memory_types = [str(x).strip().lower() for x in case.get("expected_memory_types", []) if isinstance(x, str) and x.strip()]
+            expected_status_any = [str(x).strip().lower() for x in case.get("expected_status_any", []) if isinstance(x, str) and x.strip()]
+            expected_any_mode = str(case.get("expected_any_mode", "normalized")).strip().lower()
+            if expected_any_mode not in {"substring", "normalized"}:
+                expected_any_mode = "normalized"
+            required_min_hits_raw = case.get("required_min_hits")
+            try:
+                required_min_hits = int(required_min_hits_raw) if required_min_hits_raw is not None else None
+            except (TypeError, ValueError):
+                required_min_hits = None
+
+            expected_any_norm = [_normalize_phrase(x) for x in expected_any if _normalize_phrase(x)]
 
             retrieved = self.retrieve(
                 query,
@@ -995,10 +2475,17 @@ class MemoryStore:
             hits = 0
             relevant_retrieved = 0
             matched_expected_tokens: set[str] = set()
+            matched_topics: set[str] = set()
+            matched_types: set[str] = set()
+            matched_status: set[str] = set()
 
             for item in retrieved:
                 summary = str(item.get("summary", "")).lower()
+                summary_norm = _normalize_phrase(summary)
                 event_id = str(item.get("id", ""))
+                item_topic = str(item.get("topic", "")).strip().lower()
+                item_type = str(item.get("memory_type", "")).strip().lower()
+                item_status = str(item.get("status", "")).strip().lower()
                 is_relevant = False
 
                 for expected_id in expected_ids:
@@ -1007,16 +2494,42 @@ class MemoryStore:
                         is_relevant = True
 
                 for expected_text in expected_any:
-                    if expected_text in summary:
+                    if expected_any_mode == "substring" and expected_text in summary:
                         matched_expected_tokens.add(f"txt:{expected_text}")
+                        is_relevant = True
+                if expected_any_mode == "normalized":
+                    for expected_norm in expected_any_norm:
+                        if expected_norm and expected_norm in summary_norm:
+                            matched_expected_tokens.add(f"txtn:{expected_norm}")
+                            is_relevant = True
+
+                for expected_topic in expected_topics:
+                    if expected_topic and expected_topic in item_topic:
+                        matched_topics.add(expected_topic)
+                        is_relevant = True
+
+                for expected_type in expected_memory_types:
+                    if expected_type and expected_type == item_type:
+                        matched_types.add(expected_type)
+                        is_relevant = True
+
+                for expected_status in expected_status_any:
+                    if expected_status and expected_status in item_status:
+                        matched_status.add(expected_status)
                         is_relevant = True
 
                 if is_relevant:
                     relevant_retrieved += 1
 
-            expected_count = len(expected_ids) + len(expected_any)
+            expected_count = (
+                len(expected_ids)
+                + len(expected_any)
+                + len(expected_topics)
+                + len(expected_memory_types)
+                + len(expected_status_any)
+            )
             if expected_count > 0:
-                hits = len(matched_expected_tokens)
+                hits = len(matched_expected_tokens) + len(matched_topics) + len(matched_types) + len(matched_status)
                 total_expected += expected_count
                 total_found += hits
 
@@ -1025,6 +2538,22 @@ class MemoryStore:
 
             case_recall = (hits / expected_count) if expected_count else 0.0
             case_precision = (relevant_retrieved / top_k) if top_k > 0 else 0.0
+            if required_min_hits is not None and expected_count > 0:
+                effective_required = max(min(required_min_hits, expected_count), 0)
+                case_recall = min(hits / max(effective_required, 1), 1.0)
+            why_missed: list[str] = []
+            if hits == 0:
+                if not retrieved:
+                    why_missed.append("no_candidate")
+                else:
+                    if expected_memory_types and not matched_types:
+                        why_missed.append("wrong_type")
+                    if expected_topics and not matched_topics:
+                        why_missed.append("wrong_topic")
+                    if expected_status_any and not matched_status:
+                        why_missed.append("wrong_status")
+                    if not why_missed:
+                        why_missed.append("token_mismatch")
             evaluated.append(
                 {
                     "query": query,
@@ -1034,6 +2563,7 @@ class MemoryStore:
                     "retrieved": len(retrieved),
                     "case_recall_at_k": round(case_recall, 4),
                     "case_precision_at_k": round(case_precision, 4),
+                    "why_missed": why_missed,
                 }
             )
 
@@ -1054,6 +2584,7 @@ class MemoryStore:
         evaluation: dict[str, Any],
         observability: dict[str, Any],
         *,
+        rollout: dict[str, Any] | None = None,
         output_file: str | None = None,
     ) -> Path:
         """Persist evaluation + observability report to disk and return the file path."""
@@ -1069,9 +2600,67 @@ class MemoryStore:
             "generated_at": self._utc_now_iso(),
             "evaluation": evaluation,
             "observability": observability,
+            "rollout": rollout or self.get_rollout_status(),
         }
         self.persistence.write_json(path, payload)
         return path
+
+    def evaluate_rollout_gates(
+        self,
+        evaluation: dict[str, Any],
+        observability: dict[str, Any],
+    ) -> dict[str, Any]:
+        gates = self.rollout.get("rollout_gates", {})
+        if not isinstance(gates, dict):
+            gates = {}
+
+        min_recall = self._safe_float(gates.get("min_recall_at_k"), 0.55)
+        min_precision = self._safe_float(gates.get("min_precision_at_k"), 0.25)
+        max_tokens = self._safe_float(gates.get("max_avg_memory_context_tokens"), 1400.0)
+        max_history_fallback_ratio = self._safe_float(gates.get("max_history_fallback_ratio"), 0.05)
+
+        summary = evaluation.get("summary", {}) if isinstance(evaluation, dict) else {}
+        recall = self._safe_float(summary.get("recall_at_k"), 0.0)
+        precision = self._safe_float(summary.get("precision_at_k"), 0.0)
+        kpis = observability.get("kpis", {}) if isinstance(observability, dict) else {}
+        avg_ctx_tokens = self._safe_float(kpis.get("avg_memory_context_tokens"), 0.0)
+        history_fallback_ratio = self._safe_float(kpis.get("history_fallback_ratio"), 0.0)
+
+        checks = [
+            {
+                "name": "recall_at_k",
+                "actual": round(recall, 4),
+                "threshold": round(min_recall, 4),
+                "op": ">=",
+                "passed": recall >= min_recall,
+            },
+            {
+                "name": "precision_at_k",
+                "actual": round(precision, 4),
+                "threshold": round(min_precision, 4),
+                "op": ">=",
+                "passed": precision >= min_precision,
+            },
+            {
+                "name": "avg_memory_context_tokens",
+                "actual": round(avg_ctx_tokens, 2),
+                "threshold": round(max_tokens, 2),
+                "op": "<=",
+                "passed": avg_ctx_tokens <= max_tokens,
+            },
+            {
+                "name": "history_fallback_ratio",
+                "actual": round(history_fallback_ratio, 4),
+                "threshold": round(max_history_fallback_ratio, 4),
+                "op": "<=",
+                "passed": history_fallback_ratio <= max_history_fallback_ratio,
+            },
+        ]
+        return {
+            "passed": all(bool(item["passed"]) for item in checks),
+            "checks": checks,
+            "rollout_mode": str(self.rollout.get("memory_rollout_mode", "enabled")),
+        }
 
     def read_events(self, limit: int | None = None) -> list[dict[str, Any]]:
         out = self.persistence.read_jsonl(self.events_file)
@@ -1089,6 +2678,41 @@ class MemoryStore:
 
     def _ensure_event_provenance(self, event: dict[str, Any]) -> dict[str, Any]:
         event_copy = dict(event)
+        event_type = str(event_copy.get("type", "fact"))
+        summary = str(event_copy.get("summary", ""))
+        source = str(event_copy.get("source", "chat"))
+        metadata_input = event_copy.get("metadata") if isinstance(event_copy.get("metadata"), dict) else None
+        metadata, _ = self._normalize_memory_metadata(
+            metadata_input,
+            event_type=event_type,
+            summary=summary,
+            source=source,
+        )
+        if isinstance(event_copy.get("ttl_days"), int) and int(event_copy.get("ttl_days", 0)) > 0:
+            metadata["ttl_days"] = int(event_copy["ttl_days"])
+        if not isinstance(event_copy.get("evidence_refs"), list):
+            event_copy["evidence_refs"] = metadata.get("evidence_refs", [])
+        current_memory_type = str(event_copy.get("memory_type", "")).strip().lower()
+        event_copy["memory_type"] = current_memory_type if current_memory_type in self.MEMORY_TYPES else str(
+            metadata.get("memory_type", "episodic")
+        )
+        event_copy["topic"] = str(event_copy.get("topic") or metadata.get("topic", self._default_topic_for_event_type(event_type)))
+        current_stability = str(event_copy.get("stability", "")).strip().lower()
+        event_copy["stability"] = current_stability if current_stability in self.MEMORY_STABILITY else str(
+            metadata.get("stability", "medium")
+        )
+        event_copy["source"] = str(event_copy.get("source") or metadata.get("source", "chat")).strip().lower() or "chat"
+        normalized_status = self._infer_episodic_status(
+            event_type=event_type,
+            summary=summary,
+            raw_status=event_copy.get("status"),
+        )
+        event_copy["status"] = normalized_status
+        merged_metadata = dict(metadata_input or {})
+        merged_metadata.update(metadata)
+        if normalized_status:
+            merged_metadata["status"] = normalized_status
+        event_copy["metadata"] = merged_metadata
         event_id = str(event_copy.get("id", "")).strip()
         if not event_id:
             return event_copy
@@ -1172,6 +2796,50 @@ class MemoryStore:
 
         return best_idx, best_score
 
+    def _find_semantic_supersession(
+        self,
+        candidate: dict[str, Any],
+        existing_events: list[dict[str, Any]],
+    ) -> int | None:
+        if self._memory_type_for_item(candidate) != "semantic":
+            return None
+        candidate_summary = str(candidate.get("summary", "")).strip()
+        candidate_type = str(candidate.get("type", ""))
+        if not candidate_summary:
+            return None
+
+        for idx, existing in enumerate(existing_events):
+            if self._memory_type_for_item(existing) != "semantic":
+                continue
+            if str(existing.get("type", "")) != candidate_type:
+                continue
+            if str(existing.get("status", "")).strip().lower() == "superseded":
+                continue
+
+            existing_summary = str(existing.get("summary", "")).strip()
+            if not existing_summary:
+                continue
+            has_conflict = self._conflict_pair(existing_summary, candidate_summary)
+            if not has_conflict:
+                existing_norm = self._norm_text(existing_summary)
+                candidate_norm = self._norm_text(candidate_summary)
+                existing_not = " not " in f" {existing_norm} " or "n't" in existing_norm
+                candidate_not = " not " in f" {candidate_norm} " or "n't" in candidate_norm
+                if existing_not != candidate_not:
+                    stop = {"do", "does", "did"}
+                    left_tokens = {t for t in self._tokenize(existing_norm.replace("not", "")) if t not in stop}
+                    right_tokens = {t for t in self._tokenize(candidate_norm.replace("not", "")) if t not in stop}
+                    if left_tokens and right_tokens:
+                        overlap = len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+                        has_conflict = overlap >= 0.45
+            if not has_conflict:
+                continue
+
+            lexical, semantic = self._event_similarity(candidate, existing)
+            if lexical >= 0.35 or semantic >= 0.35:
+                return idx
+        return None
+
     def _merge_events(
         self,
         base: dict[str, Any],
@@ -1207,6 +2875,22 @@ class MemoryStore:
         merged["last_merged_at"] = self._utc_now_iso()
         merged["last_dedup_score"] = round(similarity, 4)
         merged["canonical_id"] = str(canonical.get("canonical_id") or canonical.get("id", ""))
+        merged_status = self._infer_episodic_status(
+            event_type=str(merged.get("type", "")),
+            summary=str(merged.get("summary", "")),
+            raw_status=merged.get("status"),
+        )
+        incoming_status = self._infer_episodic_status(
+            event_type=str(candidate.get("type", "")),
+            summary=str(candidate.get("summary", "")),
+            raw_status=candidate.get("status"),
+        )
+        if merged_status in {self.EPISODIC_STATUS_OPEN, self.EPISODIC_STATUS_RESOLVED}:
+            if incoming_status == self.EPISODIC_STATUS_RESOLVED:
+                merged["status"] = self.EPISODIC_STATUS_RESOLVED
+                merged["resolved_at"] = str(candidate.get("timestamp", self._utc_now_iso()))
+            else:
+                merged["status"] = merged_status
 
         canonical_ts = self._to_datetime(str(canonical.get("timestamp", "")))
         candidate_ts = self._to_datetime(str(candidate.get("timestamp", "")))
@@ -1221,6 +2905,7 @@ class MemoryStore:
         existing_ids = {e.get("id") for e in existing_events if e.get("id")}
         written = 0
         merged = 0
+        superseded = 0
         appended_events: list[dict[str, Any]] = []
 
         for raw in events:
@@ -1235,6 +2920,26 @@ class MemoryStore:
                         existing_events[idx] = self._merge_events(existing, candidate, similarity=1.0)
                         merged += 1
                         break
+                continue
+
+            superseded_idx = self._find_semantic_supersession(candidate, existing_events)
+            if superseded_idx is not None:
+                now_iso = self._utc_now_iso()
+                superseded_event = dict(existing_events[superseded_idx])
+                superseded_id = str(superseded_event.get("id", "")).strip()
+                superseded_event["status"] = "superseded"
+                superseded_event["superseded_at"] = now_iso
+                if event_id:
+                    superseded_event["superseded_by_event_id"] = event_id
+                existing_events[superseded_idx] = superseded_event
+                if superseded_id:
+                    candidate["supersedes_event_id"] = superseded_id
+                candidate["supersedes_at"] = now_iso
+                existing_ids.add(event_id)
+                existing_events.append(candidate)
+                appended_events.append(candidate)
+                written += 1
+                superseded += 1
                 continue
 
             dup_idx, dup_score = self._find_semantic_duplicate(candidate, existing_events)
@@ -1254,21 +2959,49 @@ class MemoryStore:
         self.persistence.write_jsonl(self.events_file, existing_events)
         if merged > 0:
             self._record_metric("event_dedup_merges", merged)
+        if superseded > 0:
+            self._record_metric("semantic_supersessions", superseded)
 
         if written > 0 and self.mem0.enabled:
+            write_totals = {
+                "memory_writes_total": 0,
+                "memory_writes_semantic": 0,
+                "memory_writes_episodic": 0,
+                "memory_writes_reflection": 0,
+                "memory_writes_dual": 0,
+                "memory_write_failures": 0,
+                "reflection_downgraded_no_evidence": 0,
+            }
             for event in appended_events:
-                summary = str(event.get("summary", "")).strip()
-                if not summary:
-                    continue
-                metadata = {
-                    "event_type": str(event.get("type", "fact")),
-                    "timestamp": str(event.get("timestamp", "")),
-                    "entities": self._to_str_list(event.get("entities")),
-                    "source_span": event.get("source_span"),
-                    "channel": str(event.get("channel", "")),
-                    "chat_id": str(event.get("chat_id", "")),
-                }
-                self.mem0.add_text(summary, metadata=metadata)
+                plan = self._event_mem0_write_plan(event)
+                dual_recorded = False
+                for text, metadata in plan:
+                    clean_text = self._sanitize_mem0_text(
+                        text,
+                        allow_archival=bool(metadata.get("archival")),
+                    )
+                    if not clean_text:
+                        continue
+                    clean_metadata = self._sanitize_mem0_metadata(metadata)
+                    if bool(metadata.get("reflection_safety_downgraded")):
+                        write_totals["reflection_downgraded_no_evidence"] += 1
+                    mem0_ok = self.mem0.add_text(clean_text, metadata=clean_metadata)
+                    if not mem0_ok:
+                        write_totals["memory_write_failures"] += 1
+                        continue
+                    write_totals["memory_writes_total"] += 1
+                    memory_type = str(clean_metadata.get("memory_type", "")).strip().lower()
+                    if memory_type == "semantic":
+                        write_totals["memory_writes_semantic"] += 1
+                    elif memory_type == "reflection":
+                        write_totals["memory_writes_reflection"] += 1
+                    else:
+                        write_totals["memory_writes_episodic"] += 1
+                    if len(plan) > 1 and not dual_recorded:
+                        write_totals["memory_writes_dual"] += 1
+                        dual_recorded = True
+            if write_totals["memory_writes_total"] > 0 or write_totals["memory_write_failures"] > 0:
+                self._record_metrics(write_totals)
         return written
 
     def read_profile(self) -> dict[str, Any]:
@@ -1507,7 +3240,7 @@ class MemoryStore:
         pool.sort(key=lambda c: str(c.get("asked_at", "")))
         return pool[0]
 
-    def ask_user_for_conflict(self) -> str | None:
+    def ask_user_for_conflict(self, *, include_already_asked: bool = False) -> str | None:
         profile = self.read_profile()
         conflicts = profile.get("conflicts", [])
         if not isinstance(conflicts, list):
@@ -1520,6 +3253,8 @@ class MemoryStore:
                 continue
             status = str(item.get("status", self.CONFLICT_STATUS_OPEN)).strip().lower()
             if status != self.CONFLICT_STATUS_NEEDS_USER:
+                continue
+            if not include_already_asked and item.get("asked_at"):
                 continue
             chosen_idx = idx
             chosen = item
@@ -1638,18 +3373,29 @@ class MemoryStore:
             new_entry = self._meta_entry(profile, key, new_value)
             new_entry["status"] = self.PROFILE_STATUS_STALE
         elif selected == "keep_new":
+            clean_new_value = self._sanitize_mem0_text(new_value, allow_archival=False) or new_value
             if old_memory_id:
-                mem0_ok = self.mem0.update(old_memory_id, new_value)
+                mem0_ok = self.mem0.update(old_memory_id, clean_new_value)
                 result["mem0_operation"] = "update_old_to_new"
                 if mem0_ok and new_memory_id and new_memory_id != old_memory_id:
                     self.mem0.delete(new_memory_id)
                     conflict["new_memory_id"] = old_memory_id
                     result["new_memory_id"] = old_memory_id
             else:
-                mem0_ok = self.mem0.add_text(
-                    new_value,
-                    metadata={"event_type": "conflict_resolution", "field": key, "source": "resolve_conflict"},
+                conflict_metadata, _ = self._normalize_memory_metadata(
+                    {"topic": "conflict_resolution", "memory_type": "semantic", "stability": "high"},
+                    event_type="fact",
+                    summary=clean_new_value,
+                    source="chat",
                 )
+                conflict_metadata.update({"event_type": "conflict_resolution", "field": key})
+                conflict_metadata = self._sanitize_mem0_metadata(conflict_metadata)
+                mem0_ok = self.mem0.add_text(
+                    clean_new_value,
+                    metadata=conflict_metadata,
+                ) if clean_new_value else False
+                if mem0_ok:
+                    self._record_mem0_write_metric("semantic")
                 result["mem0_operation"] = "add_new"
             values = _remove_value(values, old_value)
             new_entry = self._meta_entry(profile, key, new_value)
@@ -1689,6 +3435,15 @@ class MemoryStore:
         raw = f"{self._norm_text(event_type)}|{self._norm_text(summary)}|{timestamp[:16]}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
+    def _infer_episodic_status(self, *, event_type: str, summary: str, raw_status: Any = None) -> str | None:
+        if event_type not in {"task", "decision"}:
+            return None
+        if isinstance(raw_status, str):
+            normalized = raw_status.strip().lower()
+            if normalized in {self.EPISODIC_STATUS_OPEN, self.EPISODIC_STATUS_RESOLVED}:
+                return normalized
+        return self.EPISODIC_STATUS_RESOLVED if self._is_resolved_task_or_decision(summary) else self.EPISODIC_STATUS_OPEN
+
     def _coerce_event(
         self,
         raw: dict[str, Any],
@@ -1709,6 +3464,21 @@ class MemoryStore:
         ttl_days = raw.get("ttl_days")
         if not isinstance(ttl_days, int) or ttl_days <= 0:
             ttl_days = None
+        source = str(raw.get("source", "chat")).strip().lower() or "chat"
+        status = self._infer_episodic_status(
+            event_type=event_type,
+            summary=summary.strip(),
+            raw_status=raw.get("status"),
+        )
+        metadata_input = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None
+        metadata, _ = self._normalize_memory_metadata(
+            metadata_input,
+            event_type=event_type,
+            summary=summary.strip(),
+            source=source,
+        )
+        if ttl_days is not None:
+            metadata["ttl_days"] = ttl_days
 
         event_id = raw.get("id") if isinstance(raw.get("id"), str) else ""
         if not event_id:
@@ -1726,6 +3496,13 @@ class MemoryStore:
             "confidence": confidence,
             "source_span": source_span,
             "ttl_days": ttl_days,
+            "memory_type": metadata.get("memory_type", "episodic"),
+            "topic": metadata.get("topic", self._default_topic_for_event_type(event_type)),
+            "stability": metadata.get("stability", "medium"),
+            "source": metadata.get("source", source),
+            "evidence_refs": metadata.get("evidence_refs", []),
+            "status": status,
+            "metadata": metadata,
         }
 
     def retrieve(
@@ -1738,11 +3515,142 @@ class MemoryStore:
         if not self.mem0.enabled:
             return []
 
+        mode = str(self.rollout.get("memory_rollout_mode", "enabled")).strip().lower()
+        if mode not in self.ROLLOUT_MODES:
+            mode = "enabled"
+        type_separation_enabled = bool(self.rollout.get("memory_type_separation_enabled", True))
+        router_enabled = bool(self.rollout.get("memory_router_enabled", True))
+        reflection_enabled = bool(self.rollout.get("memory_reflection_enabled", True))
+        if mode == "disabled":
+            type_separation_enabled = False
+            router_enabled = False
+            reflection_enabled = False
+        if mode == "shadow":
+            router_enabled = False
+
+        final, stats = self._retrieve_core(
+            query=query,
+            top_k=top_k,
+            router_enabled=router_enabled,
+            type_separation_enabled=type_separation_enabled,
+            reflection_enabled=reflection_enabled,
+        )
         self._record_metric("retrieval_queries", 1)
-        retrieved = self.mem0.search(query, top_k=top_k)
+        self._record_metric(f"retrieval_intent_{stats['intent']}", 1)
+        self._record_metric("retrieval_candidates", int(stats["retrieved_count"]))
+        if int(stats["retrieved_count"]) > 0:
+            self._record_metric("retrieval_hits", 1)
+        self._record_metrics(stats["counts"])
+
+        shadow_enabled = bool(self.rollout.get("memory_shadow_mode", False))
+        shadow_rate = float(self.rollout.get("memory_shadow_sample_rate", 0.2) or 0.0)
+        if shadow_enabled and shadow_rate > 0 and mode != "disabled":
+            shadow_should_run = shadow_rate >= 1.0 or (hash(f"{query}|{top_k}") % 1000) < int(shadow_rate * 1000)
+            if shadow_should_run:
+                shadow_router_enabled = not router_enabled
+                shadow_final, _ = self._retrieve_core(
+                    query=query,
+                    top_k=top_k,
+                    router_enabled=shadow_router_enabled,
+                    type_separation_enabled=type_separation_enabled,
+                    reflection_enabled=reflection_enabled,
+                )
+                primary_ids = [str(item.get("id", "")) for item in final if str(item.get("id", "")).strip()]
+                shadow_ids = [str(item.get("id", "")) for item in shadow_final if str(item.get("id", "")).strip()]
+                overlap = 0.0
+                if primary_ids or shadow_ids:
+                    overlap = len(set(primary_ids) & set(shadow_ids)) / max(len(set(primary_ids) | set(shadow_ids)), 1)
+                self._record_metrics(
+                    {
+                        "retrieval_shadow_runs": 1,
+                        "retrieval_shadow_overlap_count": 1,
+                        "retrieval_shadow_overlap_sum": int(round(overlap * 1000)),
+                    }
+                )
+        return final
+
+    def _retrieve_core(
+        self,
+        *,
+        query: str,
+        top_k: int,
+        router_enabled: bool,
+        type_separation_enabled: bool,
+        reflection_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        intent = self._infer_retrieval_intent(query) if router_enabled else "fact_lookup"
+        policy = self._retrieval_policy(intent)
+        candidate_multiplier = max(int(policy.get("candidate_multiplier", 3)), 1) if router_enabled else 1
+        candidate_k = max(1, min(max(top_k, top_k * candidate_multiplier), 60))
+        allowed_sources = {
+            str(item).strip().lower()
+            for item in self.rollout.get("memory_fallback_allowed_sources", [])
+            if str(item).strip()
+        }
+        max_summary_chars = int(self.rollout.get("memory_fallback_max_summary_chars", 280) or 280)
+        search_result = self.mem0.search(
+            query,
+            top_k=candidate_k,
+            allow_get_all_fallback=True,
+            allow_history_fallback=bool(self.rollout.get("memory_history_fallback_enabled", False)),
+            allowed_sources=allowed_sources,
+            max_summary_chars=max_summary_chars,
+            reject_blob_like=True,
+            return_stats=True,
+        )
+        if isinstance(search_result, tuple) and len(search_result) == 2:
+            retrieved, source_stats = search_result
+        else:
+            retrieved = search_result if isinstance(search_result, list) else []
+            source_stats = {
+                "source_vector": 0,
+                "source_get_all": 0,
+                "source_history": 0,
+                "rejected_blob_like": 0,
+            }
+        if intent == "rollout_status":
+            retrieved.append(
+                {
+                    "id": "rollout_status_snapshot",
+                    "timestamp": self._utc_now_iso(),
+                    "type": "fact",
+                    "summary": (
+                        "Memory rollout status: "
+                        f"mode={self.rollout.get('memory_rollout_mode')}, "
+                        f"router={self.rollout.get('memory_router_enabled')}, "
+                        f"shadow={self.rollout.get('memory_shadow_mode')}, "
+                        f"reflection={self.rollout.get('memory_reflection_enabled')}, "
+                        f"type_separation={self.rollout.get('memory_type_separation_enabled')}."
+                    ),
+                    "entities": [],
+                    "score": 0.95,
+                    "memory_type": "semantic",
+                    "topic": "rollout",
+                    "stability": "high",
+                    "source": "config",
+                    "confidence": 1.0,
+                    "evidence_refs": [],
+                    "retrieval_reason": {
+                        "provider": "nanobot",
+                        "backend": "synthetic_rollout",
+                        "semantic": 0.95,
+                        "recency": 0.0,
+                    },
+                    "provenance": {"canonical_id": "rollout_status_snapshot", "source_span": None},
+                }
+            )
         if not retrieved:
-            return retrieved
-        self._record_metric("retrieval_hits", 1)
+            return [], {
+                "intent": intent,
+                "retrieved_count": 0,
+                "counts": {
+                    "retrieval_returned": 0,
+                    "retrieval_source_vector_count": int(source_stats.get("source_vector", 0)),
+                    "retrieval_source_get_all_count": int(source_stats.get("source_get_all", 0)),
+                    "retrieval_source_history_count": int(source_stats.get("source_history", 0)),
+                    "retrieval_rejected_blob_count": int(source_stats.get("rejected_blob_like", 0)),
+                },
+            }
 
         profile = self.read_profile()
         conflicts = profile.get("conflicts", []) if isinstance(profile.get("conflicts"), list) else []
@@ -1755,7 +3663,6 @@ class MemoryStore:
             "task": "active_projects",
             "decision": "active_projects",
         }
-
         resolved_keep_new_old: dict[str, set[str]] = {key: set() for key in self.PROFILE_KEYS}
         resolved_keep_new_new: dict[str, set[str]] = {key: set() for key in self.PROFILE_KEYS}
         for conflict in conflicts:
@@ -1784,27 +3691,80 @@ class MemoryStore:
             return phrase_norm in text_norm
 
         adjusted: list[dict[str, Any]] = []
+        reflection_filtered_non_reflection_intent = 0
+        reflection_filtered_no_evidence = 0
+        routing_hints = self._query_routing_hints(query)
         for item in retrieved:
             event_type = str(item.get("type", "fact"))
+            memory_type = self._memory_type_for_item(item)
+            item["memory_type"] = memory_type
+
+            topic = str(item.get("topic", "")).strip().lower()
+            summary = str(item.get("summary", ""))
+            event_status = str(item.get("status", "")).strip().lower()
+            task_or_decision_like = event_type in {"task", "decision"} or topic in {"task_progress", "project", "planning"}
+            planning_like = task_or_decision_like or self._contains_any(summary, ("plan", "next step", "roadmap", "milestone"))
+            architecture_like = (
+                "architecture" in topic
+                or self._contains_any(summary, ("architecture", "design decision", "memory architecture"))
+                or event_type == "decision"
+            )
+            if routing_hints["focus_task_decision"] and not task_or_decision_like:
+                continue
+            if routing_hints["focus_planning"] and not planning_like:
+                continue
+            if routing_hints["focus_architecture"] and not architecture_like:
+                continue
+            if not self._status_matches_query_hint(
+                status=event_status,
+                summary=summary,
+                requires_open=bool(routing_hints["requires_open"]),
+                requires_resolved=bool(routing_hints["requires_resolved"]),
+            ):
+                continue
+            if intent == "constraints_lookup":
+                if memory_type != "semantic":
+                    continue
+                if "constraint" not in topic and not self._contains_any(summary, ("must", "cannot", "constraint", "should not")):
+                    continue
+            if intent == "debug_history":
+                if memory_type != "episodic" and topic not in {"infra", "task_progress", "incident"}:
+                    continue
+            if intent == "conflict_review":
+                if not self._contains_any(summary, ("conflict", "needs_user", "resolved", "keep_new", "decision")):
+                    continue
+            if intent == "rollout_status":
+                if not self._contains_any(summary, ("rollout", "router", "shadow", "reflection", "type_separation")):
+                    continue
+
+            if reflection_enabled:
+                if memory_type == "reflection" and type_separation_enabled and intent != "reflection":
+                    reflection_filtered_non_reflection_intent += 1
+                    continue
+                evidence_refs = item.get("evidence_refs")
+                if memory_type == "reflection" and not (isinstance(evidence_refs, list) and len(evidence_refs) > 0):
+                    reflection_filtered_no_evidence += 1
+                    continue
+            elif memory_type == "reflection":
+                reflection_filtered_non_reflection_intent += 1
+                continue
+
             field = field_by_event_type.get(event_type)
             summary = str(item.get("summary", ""))
             score = float(item.get("score", 0.0))
             adjustment = 0.0
             adjustment_reasons: list[str] = []
-
             if field:
                 for old_norm in resolved_keep_new_old.get(field, set()):
                     if _contains_norm_phrase(summary, old_norm):
                         adjustment -= 0.18
                         adjustment_reasons.append("resolved_keep_new_old_penalty")
                         break
-
                 for new_norm in resolved_keep_new_new.get(field, set()):
                     if _contains_norm_phrase(summary, new_norm):
                         adjustment += 0.12
                         adjustment_reasons.append("resolved_keep_new_new_boost")
                         break
-
                 section_meta = self._meta_section(profile, field)
                 if isinstance(section_meta, dict):
                     for norm_key, meta in section_meta.items():
@@ -1822,20 +3782,71 @@ class MemoryStore:
                             adjustment -= 0.05
                             adjustment_reasons.append("conflicted_profile_penalty")
                             break
+            if memory_type == "semantic":
+                if event_status == "superseded" or str(item.get("superseded_by_event_id", "")).strip():
+                    adjustment -= 0.2
+                    adjustment_reasons.append("semantic_superseded_penalty")
 
+            reason = item.get("retrieval_reason")
+            if not isinstance(reason, dict):
+                reason = {}
+                item["retrieval_reason"] = reason
             if adjustment_reasons:
-                reason = item.get("retrieval_reason")
-                if not isinstance(reason, dict):
-                    reason = {}
-                    item["retrieval_reason"] = reason
                 reason["profile_adjustment"] = round(adjustment, 4)
                 reason["profile_adjustment_reasons"] = adjustment_reasons
 
-            item["score"] = score + adjustment
+            recency = self._recency_signal(
+                str(item.get("timestamp", "")),
+                half_life_days=float(policy.get("half_life_days", 60.0)),
+            )
+            type_boost = float(policy.get("type_boost", {}).get(memory_type, 0.0)) if type_separation_enabled else 0.0
+            stability = str(item.get("stability", "medium")).strip().lower()
+            stability_boost = {"high": 0.03, "medium": 0.01, "low": -0.02}.get(stability, 0.0)
+            reflection_penalty = -0.06 if memory_type == "reflection" else 0.0
+            if not router_enabled:
+                recency = 0.0
+                stability_boost = 0.0
+                reflection_penalty = 0.0
+                type_boost = 0.0
+            elif reflection_penalty:
+                adjustment_reasons.append("reflection_default_penalty")
+            intent_bonus = type_boost + (0.08 * recency) + stability_boost + reflection_penalty
+            item["score"] = score + adjustment + intent_bonus
+            reason["recency"] = round(recency, 4)
+            reason["intent"] = intent
+            reason["type_boost"] = round(type_boost, 4)
+            reason["stability_boost"] = round(stability_boost, 4)
+            if reflection_penalty:
+                reason["reflection_penalty"] = round(reflection_penalty, 4)
             adjusted.append(item)
 
         adjusted.sort(key=lambda item: item.get("score", 0.0), reverse=True)
-        return adjusted[: max(1, top_k)]
+        final = adjusted[: max(1, top_k)]
+        counts = {
+            "retrieval_returned": len(final),
+            "retrieval_filtered_out": max(len(retrieved) - len(final), 0),
+            "retrieval_source_vector_count": int(source_stats.get("source_vector", 0)),
+            "retrieval_source_get_all_count": int(source_stats.get("source_get_all", 0)),
+            "retrieval_source_history_count": int(source_stats.get("source_history", 0)),
+            "retrieval_rejected_blob_count": int(source_stats.get("rejected_blob_like", 0)),
+            "reflection_filtered_non_reflection_intent": reflection_filtered_non_reflection_intent,
+            "reflection_filtered_no_evidence": reflection_filtered_no_evidence,
+            "retrieval_returned_semantic": 0,
+            "retrieval_returned_episodic": 0,
+            "retrieval_returned_reflection": 0,
+            "retrieval_returned_unknown": 0,
+        }
+        for item in final:
+            memory_type = str(item.get("memory_type", "")).strip().lower()
+            if memory_type == "semantic":
+                counts["retrieval_returned_semantic"] += 1
+            elif memory_type == "episodic":
+                counts["retrieval_returned_episodic"] += 1
+            elif memory_type == "reflection":
+                counts["retrieval_returned_reflection"] += 1
+            else:
+                counts["retrieval_returned_unknown"] += 1
+        return final, {"intent": intent, "retrieved_count": len(retrieved), "counts": counts}
 
     def _profile_section_lines(self, profile: dict[str, Any], max_items_per_section: int = 6) -> list[str]:
         lines: list[str] = []
@@ -1883,6 +3894,9 @@ class MemoryStore:
             event_type = str(event.get("type", ""))
             if event_type not in {"task", "decision"}:
                 continue
+            status = str(event.get("status", "")).strip().lower()
+            if status == self.EPISODIC_STATUS_RESOLVED:
+                continue
             summary = str(event.get("summary", "")).strip()
             if not summary or self._is_resolved_task_or_decision(summary):
                 continue
@@ -1892,6 +3906,31 @@ class MemoryStore:
         unresolved.reverse()
         return unresolved
 
+    @staticmethod
+    def _memory_item_line(item: dict[str, Any]) -> str:
+        timestamp = str(item.get("timestamp", ""))[:16]
+        event_type = item.get("type", "fact")
+        summary = item.get("summary", "")
+        reason = item.get("retrieval_reason", {})
+        return (
+            f"- [{timestamp}] ({event_type}) {summary} "
+            f"[sem={reason.get('semantic', 0):.2f}, rec={reason.get('recency', 0):.2f}, src={reason.get('provider', 'mem0')}]"
+        )
+
+    def _fit_lines_to_token_cap(self, lines: list[str], *, token_cap: int) -> list[str]:
+        if token_cap <= 0 or not lines:
+            return []
+        out: list[str] = []
+        used = 0
+        for line in lines:
+            line_tokens = self._estimate_tokens(line)
+            if out and used + line_tokens > token_cap:
+                out.append("- ... (section truncated to token budget)")
+                break
+            out.append(line)
+            used += line_tokens
+        return out
+
     def get_memory_context(
         self,
         *,
@@ -1899,6 +3938,7 @@ class MemoryStore:
         retrieval_k: int = 6,
         token_budget: int = 900,
     ) -> str:
+        intent = self._infer_retrieval_intent(query or "")
         long_term = self.read_long_term()
 
         profile = self.read_profile()
@@ -1907,29 +3947,84 @@ class MemoryStore:
             top_k=retrieval_k,
         )
 
+        budget = max(token_budget, 200)
+        semantic_cap = max(int(budget * 0.55), 80)
+        episodic_cap = max(int(budget * 0.35), 0)
+        reflection_cap = max(int(budget * 0.10), 0)
+        include_episodic = intent in {"debug_history", "planning"}
+        include_reflection = intent == "reflection"
+        if intent == "fact_lookup":
+            episodic_cap = 0
+            reflection_cap = 0
+        elif intent == "constraints_lookup":
+            semantic_cap = max(int(budget * 0.7), 100)
+            episodic_cap = 0
+            reflection_cap = 0
+        elif intent == "rollout_status":
+            semantic_cap = max(int(budget * 0.8), 100)
+            episodic_cap = 0
+            reflection_cap = 0
+        elif intent == "conflict_review":
+            semantic_cap = max(int(budget * 0.55), 80)
+            episodic_cap = max(int(budget * 0.35), 60)
+            reflection_cap = 0
+            include_episodic = True
+        elif intent == "debug_history":
+            semantic_cap = max(int(budget * 0.35), 60)
+            episodic_cap = max(int(budget * 0.55), 80)
+            reflection_cap = max(int(budget * 0.10), 0)
+        elif intent == "planning":
+            semantic_cap = max(int(budget * 0.5), 70)
+            episodic_cap = max(int(budget * 0.4), 60)
+            reflection_cap = max(int(budget * 0.1), 0)
+        elif intent == "reflection":
+            semantic_cap = max(int(budget * 0.45), 60)
+            episodic_cap = max(int(budget * 0.2), 0)
+            reflection_cap = max(int(budget * 0.35), 40)
+            include_episodic = True
+
         lines: list[str] = ["## Long-term Memory"]
+        long_term_text = long_term.strip() if long_term else ""
         if long_term:
-            lines.append(long_term.strip())
+            lines.append(long_term_text)
 
         profile_lines = self._profile_section_lines(profile)
+        profile_text = "\n".join(profile_lines).strip() if profile_lines else ""
         if profile_lines:
             lines.append("## Profile Memory")
             lines.extend(profile_lines)
 
-        if retrieved:
+        semantic_items = [item for item in retrieved if self._memory_type_for_item(item) == "semantic"]
+        episodic_items = [item for item in retrieved if self._memory_type_for_item(item) == "episodic"]
+        reflection_items = [item for item in retrieved if self._memory_type_for_item(item) == "reflection"]
+
+        semantic_lines = self._fit_lines_to_token_cap(
+            [self._memory_item_line(item) for item in semantic_items],
+            token_cap=semantic_cap,
+        )
+        episodic_lines = self._fit_lines_to_token_cap(
+            [self._memory_item_line(item) for item in episodic_items],
+            token_cap=episodic_cap,
+        )
+        reflection_lines = self._fit_lines_to_token_cap(
+            [self._memory_item_line(item) for item in reflection_items],
+            token_cap=reflection_cap,
+        )
+
+        if semantic_lines:
+            lines.append("## Relevant Semantic Memories")
+            lines.extend(semantic_lines)
+
+        if include_episodic and episodic_lines:
             lines.append("## Relevant Episodic Memories")
-            for item in retrieved:
-                timestamp = str(item.get("timestamp", ""))[:16]
-                event_type = item.get("type", "fact")
-                summary = item.get("summary", "")
-                reason = item.get("retrieval_reason", {})
-                lines.append(
-                    f"- [{timestamp}] ({event_type}) {summary} "
-                    f"[sem={reason.get('semantic', 0):.2f}, rec={reason.get('recency', 0):.2f}, src={reason.get('provider', 'mem0')}]"
-                )
+            lines.extend(episodic_lines)
+
+        if include_reflection and reflection_lines:
+            lines.append("## Relevant Reflection Memories")
+            lines.extend(reflection_lines)
 
         unresolved = self._recent_unresolved(self.read_events(limit=60), max_items=6)
-        if unresolved:
+        if include_episodic and unresolved:
             lines.append("## Recent Unresolved Tasks/Decisions")
             for item in unresolved:
                 ts = str(item.get("timestamp", ""))[:16]
@@ -1945,8 +4040,24 @@ class MemoryStore:
         metrics["memory_context_calls"] = int(metrics.get("memory_context_calls", 0)) + 1
         metrics["memory_context_tokens_total"] = int(metrics.get("memory_context_tokens_total", 0)) + est_tokens
         metrics["memory_context_tokens_max"] = max(int(metrics.get("memory_context_tokens_max", 0)), est_tokens)
+        metrics["memory_context_tokens_long_term_total"] = (
+            int(metrics.get("memory_context_tokens_long_term_total", 0)) + self._estimate_tokens(long_term_text)
+        )
+        metrics["memory_context_tokens_profile_total"] = (
+            int(metrics.get("memory_context_tokens_profile_total", 0)) + self._estimate_tokens(profile_text)
+        )
+        metrics["memory_context_tokens_semantic_total"] = int(metrics.get("memory_context_tokens_semantic_total", 0)) + self._estimate_tokens(
+            "\n".join(semantic_lines)
+        )
+        metrics["memory_context_tokens_episodic_total"] = int(metrics.get("memory_context_tokens_episodic_total", 0)) + self._estimate_tokens(
+            "\n".join(episodic_lines if include_episodic else [])
+        )
+        metrics["memory_context_tokens_reflection_total"] = int(
+            metrics.get("memory_context_tokens_reflection_total", 0)
+        ) + self._estimate_tokens("\n".join(reflection_lines if include_reflection else []))
+        metrics[f"memory_context_intent_{intent}"] = int(metrics.get(f"memory_context_intent_{intent}", 0)) + 1
         metrics["last_updated"] = self._utc_now_iso()
-        self.persistence.write_json(self.metrics_file, metrics)
+        self._persist_metrics(metrics)
         return text
 
     def _conflict_pair(self, old_value: str, new_value: str) -> bool:
@@ -2064,7 +4175,11 @@ class MemoryStore:
         target = self._norm_text(text)
         if not target or not self.mem0.enabled:
             return None
-        rows = self.mem0.search(text, top_k=top_k)
+        search_result = self.mem0.search(text, top_k=top_k)
+        if isinstance(search_result, tuple) and len(search_result) == 2:
+            rows = search_result[0]
+        else:
+            rows = search_result if isinstance(search_result, list) else []
         if not rows:
             return None
 
@@ -2222,17 +4337,32 @@ class MemoryStore:
                 question = self.ask_user_for_conflict()
 
         if self.mem0.enabled:
-            self.mem0.add_text(
-                text,
-                metadata={
+            correction_meta, _ = self._normalize_memory_metadata(
+                {"topic": "user_correction", "memory_type": "episodic", "stability": "medium"},
+                event_type="fact",
+                summary=text,
+                source="chat",
+            )
+            correction_meta.update(
+                {
                     "event_type": "user_correction",
                     "timestamp": self._utc_now_iso(),
                     "channel": channel,
                     "chat_id": chat_id,
-                },
+                }
             )
+            correction_text = self._sanitize_mem0_text(text, allow_archival=False)
+            correction_meta = self._sanitize_mem0_metadata(correction_meta)
+            if self.mem0.add_text(
+                correction_text,
+                metadata=correction_meta,
+            ) if correction_text else False:
+                self._record_mem0_write_metric(str(correction_meta.get("memory_type", "episodic")))
+            else:
+                self._record_metric("memory_write_failures", 1)
 
-        self.rebuild_memory_snapshot(write=True)
+        # Keep LLM-managed MEMORY.md content stable; snapshot can be generated on-demand.
+        self.rebuild_memory_snapshot(write=False)
         return {
             "applied": applied,
             "conflicts": conflicts,
@@ -2493,7 +4623,8 @@ class MemoryStore:
             if profile_added > 0:
                 self.auto_resolve_conflicts(max_items=10)
 
-            self.rebuild_memory_snapshot(write=True)
+            # Keep LLM-managed MEMORY.md content stable; snapshot can be generated on-demand.
+            self.rebuild_memory_snapshot(write=False)
 
             if self.mem0.enabled:
                 for m in old_messages:
@@ -2501,15 +4632,39 @@ class MemoryStore:
                     content = str(m.get("content", "")).strip()
                     if not content:
                         continue
-                    self.mem0.add_text(
-                        content,
-                        metadata={
+                    memory_type = "episodic"
+                    if role == "user":
+                        memory_type = "semantic" if self._contains_any(
+                            content,
+                            ("prefer", "always", "never", "must", "cannot", "my setup", "i use"),
+                        ) else "episodic"
+                    turn_meta, _ = self._normalize_memory_metadata(
+                        {
+                            "topic": "conversation_turn",
+                            "memory_type": memory_type,
+                            "stability": "medium",
+                        },
+                        event_type="fact",
+                        summary=content,
+                        source="chat",
+                    )
+                    turn_meta.update(
+                        {
                             "event_type": "conversation_turn",
                             "role": role,
                             "timestamp": str(m.get("timestamp", "")),
                             "session": session.key,
-                        },
+                        }
                     )
+                    clean_content = self._sanitize_mem0_text(content, allow_archival=False)
+                    turn_meta = self._sanitize_mem0_metadata(turn_meta)
+                    if self.mem0.add_text(
+                        clean_content,
+                        metadata=turn_meta,
+                    ) if clean_content else False:
+                        self._record_mem0_write_metric(str(turn_meta.get("memory_type", "episodic")))
+                    else:
+                        self._record_metric("memory_write_failures", 1)
 
             self._finalize_consolidation(
                 session,

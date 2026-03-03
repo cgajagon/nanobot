@@ -28,9 +28,10 @@ class ContextBuilder:
         *,
         memory_retrieval_k: int = 6,
         memory_token_budget: int = 900,
+        memory_rollout_overrides: dict[str, Any] | None = None,
     ):
         self.workspace = workspace
-        self.memory = MemoryStore(workspace)
+        self.memory = MemoryStore(workspace, rollout_overrides=memory_rollout_overrides)
         self.skills = SkillsLoader(workspace)
         self.memory_retrieval_k = memory_retrieval_k
         self.memory_token_budget = memory_token_budget

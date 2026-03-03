@@ -194,6 +194,21 @@ class AgentDefaults(Base):
     memory_token_budget: int = 900
     memory_uncertainty_threshold: float = 0.6
     memory_enable_contradiction_check: bool = True
+    memory_rollout_mode: str = "enabled"  # enabled|shadow|disabled
+    memory_type_separation_enabled: bool = True
+    memory_router_enabled: bool = True
+    memory_reflection_enabled: bool = True
+    memory_shadow_mode: bool = False
+    memory_shadow_sample_rate: float = 0.2
+    memory_vector_health_enabled: bool = True
+    memory_auto_reindex_on_empty_vector: bool = True
+    memory_history_fallback_enabled: bool = False
+    memory_fallback_allowed_sources: list[str] = Field(default_factory=lambda: ["profile", "events", "mem0_get_all"])
+    memory_fallback_max_summary_chars: int = 280
+    memory_rollout_gate_min_recall_at_k: float = 0.55
+    memory_rollout_gate_min_precision_at_k: float = 0.25
+    memory_rollout_gate_max_avg_memory_context_tokens: float = 1400.0
+    memory_rollout_gate_max_history_fallback_ratio: float = 0.05
 
 
 class AgentsConfig(Base):
