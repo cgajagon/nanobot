@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.cron.service import CronService
 from nanobot.cron.types import CronSchedule
 
@@ -76,14 +76,14 @@ class CronTool(Tool):
         at: str | None = None,
         job_id: str | None = None,
         **kwargs: Any
-    ) -> str:
+    ) -> ToolResult:
         if action == "add":
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
             return self._list_jobs()
         elif action == "remove":
             return self._remove_job(job_id)
-        return f"Unknown action: {action}"
+        return ToolResult.fail(f"Unknown action: {action}")
     
     def _add_job(
         self,
@@ -92,19 +92,19 @@ class CronTool(Tool):
         cron_expr: str | None,
         tz: str | None,
         at: str | None,
-    ) -> str:
+    ) -> ToolResult:
         if not message:
-            return "Error: message is required for add"
+            return ToolResult.fail("Error: message is required for add")
         if not self._channel or not self._chat_id:
-            return "Error: no session context (channel/chat_id)"
+            return ToolResult.fail("Error: no session context (channel/chat_id)")
         if tz and not cron_expr:
-            return "Error: tz can only be used with cron_expr"
+            return ToolResult.fail("Error: tz can only be used with cron_expr")
         if tz:
             from zoneinfo import ZoneInfo
             try:
                 ZoneInfo(tz)
             except (KeyError, Exception):
-                return f"Error: unknown timezone '{tz}'"
+                return ToolResult.fail(f"Error: unknown timezone '{tz}'")
         
         # Build schedule
         delete_after = False
@@ -119,7 +119,7 @@ class CronTool(Tool):
             schedule = CronSchedule(kind="at", at_ms=at_ms)
             delete_after = True
         else:
-            return "Error: either every_seconds, cron_expr, or at is required"
+            return ToolResult.fail("Error: either every_seconds, cron_expr, or at is required")
         
         job = self._cron.add_job(
             name=message[:30],
@@ -130,18 +130,18 @@ class CronTool(Tool):
             to=self._chat_id,
             delete_after_run=delete_after,
         )
-        return f"Created job '{job.name}' (id: {job.id})"
+        return ToolResult.ok(f"Created job '{job.name}' (id: {job.id})")
     
-    def _list_jobs(self) -> str:
+    def _list_jobs(self) -> ToolResult:
         jobs = self._cron.list_jobs()
         if not jobs:
-            return "No scheduled jobs."
+            return ToolResult.ok("No scheduled jobs.")
         lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
-        return "Scheduled jobs:\n" + "\n".join(lines)
+        return ToolResult.ok("Scheduled jobs:\n" + "\n".join(lines))
     
-    def _remove_job(self, job_id: str | None) -> str:
+    def _remove_job(self, job_id: str | None) -> ToolResult:
         if not job_id:
-            return "Error: job_id is required for remove"
+            return ToolResult.fail("Error: job_id is required for remove")
         if self._cron.remove_job(job_id):
-            return f"Removed job {job_id}"
-        return f"Job {job_id} not found"
+            return ToolResult.ok(f"Removed job {job_id}")
+        return ToolResult.fail(f"Job {job_id} not found")

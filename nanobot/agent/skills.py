@@ -1,10 +1,19 @@
 """Skills loader for agent capabilities."""
 
+import importlib.util
+import inspect
 import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
+from loguru import logger
+
+from nanobot.agent.tools.base import Tool
 
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -166,13 +175,26 @@ class SkillsLoader:
                 return content[match.end():].strip()
         return content
     
-    def _parse_nanobot_metadata(self, raw: str) -> dict:
-        """Parse skill metadata JSON from frontmatter (supports nanobot and openclaw keys)."""
-        try:
-            data = json.loads(raw)
-            return data.get("nanobot", data.get("openclaw", {})) if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, TypeError):
+    def _parse_nanobot_metadata(self, raw: Any) -> dict:
+        """Parse skill metadata from frontmatter (stringified JSON or YAML object)."""
+        data: Any = raw
+        if isinstance(raw, str):
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+
+        if not isinstance(data, dict):
             return {}
+
+        # Accept historical aliases used by third-party skills.
+        if isinstance(data.get("nanobot"), dict):
+            return data["nanobot"]
+        if isinstance(data.get("openclaw"), dict):
+            return data["openclaw"]
+        if isinstance(data.get("clawdbot"), dict):
+            return data["clawdbot"]
+        return data
     
     def _check_requirements(self, skill_meta: dict) -> bool:
         """Check if skill requirements are met (bins, env vars)."""
@@ -199,6 +221,99 @@ class SkillsLoader:
             if skill_meta.get("always") or meta.get("always"):
                 result.append(s["name"])
         return result
+
+    # ------------------------------------------------------------------
+    # Custom tool discovery (Step 14)
+    # ------------------------------------------------------------------
+
+    def discover_tools(self, skill_names: list[str] | None = None) -> list[Tool]:
+        """Discover ``Tool`` subclasses from skill ``tools.py`` files.
+
+        For each activated skill that contains a ``tools.py`` module in its
+        directory, the module is imported and all public classes that inherit
+        from :class:`Tool` are instantiated (with no arguments) and returned.
+
+        Args:
+            skill_names: If provided, only inspect these skills.  Otherwise
+                inspect all available skills.
+
+        Returns:
+            List of Tool instances ready for registration.
+        """
+        names = skill_names or [s["name"] for s in self.list_skills()]
+        tools: list[Tool] = []
+
+        for name in names:
+            tool_module_path = self._find_skill_tools_py(name)
+            if tool_module_path is None:
+                continue
+            try:
+                instances = self._load_tools_from_module(name, tool_module_path)
+                tools.extend(instances)
+                if instances:
+                    logger.info(
+                        "Skill '{}' registered {} custom tool(s): {}",
+                        name,
+                        len(instances),
+                        ", ".join(t.name for t in instances),
+                    )
+            except Exception:
+                logger.exception("Failed to load custom tools from skill '{}'", name)
+        return tools
+
+    def _find_skill_tools_py(self, name: str) -> Path | None:
+        """Return the path to a skill's ``tools.py`` if it exists."""
+        # Workspace skills take priority
+        workspace_path = self.workspace_skills / name / "tools.py"
+        if workspace_path.is_file():
+            return workspace_path
+        if self.builtin_skills:
+            builtin_path = self.builtin_skills / name / "tools.py"
+            if builtin_path.is_file():
+                return builtin_path
+        return None
+
+    @staticmethod
+    def _load_tools_from_module(skill_name: str, module_path: Path) -> list[Tool]:
+        """Import a Python module by file path and extract ``Tool`` subclasses.
+
+        Each concrete (non-abstract) ``Tool`` subclass found in the module is
+        instantiated with no arguments.  If instantiation fails (e.g. the
+        tool requires constructor args), it is skipped with a warning.
+        """
+        module_name = f"nanobot_skill_{skill_name}_tools"
+        spec = importlib.util.spec_from_file_location(module_name, str(module_path))
+        if spec is None or spec.loader is None:
+            return []
+
+        mod = importlib.util.module_from_spec(spec)
+        # Temporarily add the module so relative imports within it work
+        sys.modules[module_name] = mod
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+
+        instances: list[Tool] = []
+        for attr_name in dir(mod):
+            if attr_name.startswith("_"):
+                continue
+            obj = getattr(mod, attr_name)
+            if (
+                inspect.isclass(obj)
+                and issubclass(obj, Tool)
+                and obj is not Tool
+                and not inspect.isabstract(obj)
+            ):
+                try:
+                    instances.append(obj())
+                except Exception:
+                    logger.warning(
+                        "Skill '{}': could not instantiate tool class '{}'",
+                        skill_name, attr_name,
+                    )
+        return instances
     
     def get_skill_metadata(self, name: str) -> dict | None:
         """
@@ -213,16 +328,62 @@ class SkillsLoader:
         content = self.load_skill(name)
         if not content:
             return None
-        
+
         if content.startswith("---"):
             match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
             if match:
-                # Simple YAML parsing
-                metadata = {}
-                for line in match.group(1).split("\n"):
-                    if ":" in line:
-                        key, value = line.split(":", 1)
-                        metadata[key.strip()] = value.strip().strip('"\'')
-                return metadata
-        
+                try:
+                    raw = yaml.safe_load(match.group(1))
+                    if isinstance(raw, dict):
+                        return raw
+                except Exception:
+                    pass
+
         return None
+
+    def detect_relevant_skills(self, message: str, max_skills: int = 4) -> list[str]:
+        """Select skills that match the user message via trigger phrases."""
+        text = self._normalize_text(message)
+        if not text:
+            return []
+
+        matches: list[str] = []
+        for skill in self.list_skills(filter_unavailable=True):
+            name = skill["name"]
+            triggers = self._skill_triggers(name)
+            if any(t in text for t in triggers):
+                matches.append(name)
+                if len(matches) >= max_skills:
+                    break
+        return matches
+
+    def _skill_triggers(self, name: str) -> list[str]:
+        """Build normalized trigger phrases from metadata and skill name."""
+        meta = self.get_skill_metadata(name) or {}
+        triggers: list[str] = []
+
+        raw_triggers = meta.get("triggers")
+        if isinstance(raw_triggers, list):
+            for t in raw_triggers:
+                if isinstance(t, str):
+                    triggers.append(t)
+        elif isinstance(raw_triggers, str):
+            triggers.append(raw_triggers)
+
+        triggers.append(name)
+        triggers.append(name.replace("-", " "))
+        triggers.append(name.replace("_", " "))
+
+        deduped: list[str] = []
+        for t in triggers:
+            norm = self._normalize_text(t)
+            if norm and norm not in deduped:
+                deduped.append(norm)
+        return deduped
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        text = value.lower()
+        text = re.sub(r"[^a-z0-9\s_-]+", " ", text)
+        text = text.replace("-", " ").replace("_", " ")
+        return re.sub(r"\s+", " ", text).strip()

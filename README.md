@@ -16,10 +16,14 @@
 
 ⚡️ Delivers core agent functionality in just **~4,000** lines of code — **99% smaller** than Clawdbot's 430k+ lines.
 
-📏 Real-time line count: **3,955 lines** (run `bash core_agent_lines.sh` to verify anytime)
+📏 Real-time line count: **3,966 lines** (run `bash core_agent_lines.sh` to verify anytime)
 
 ## 📢 News
 
+- **2026-03-05** 🧠 Major agent improvement batch — planning & task decomposition, self-critique, streaming responses, cross-encoder re-ranker, feedback loop, dead-letter replay, memory module decomposition, shell hardening, error taxonomy, and more. See [PR](#) for details.
+- **2026-02-24** 🚀 Released **v0.1.4.post2** — a reliability-focused release with a redesigned heartbeat, prompt cache optimization, and hardened provider & channel stability. See [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post2) for details.
+- **2026-02-23** 🔧 Virtual tool-call heartbeat, prompt cache optimization, Slack mrkdwn fixes.
+- **2026-02-22** 🛡️ Slack thread isolation, Discord typing fix, agent reliability improvements.
 - **2026-02-21** 🎉 Released **v0.1.4.post1** — new providers, media support across channels, and major stability improvements. See [release notes](https://github.com/HKUDS/nanobot/releases/tag/v0.1.4.post1) for details.
 - **2026-02-20** 🐦 Feishu now receives multimodal files from users. More reliable memory under the hood.
 - **2026-02-19** ✨ Slack now sends files, Discord splits long messages, and subagents work in CLI mode.
@@ -574,6 +578,29 @@ Simply send the command above to your nanobot (via CLI or any chat channel), and
 
 ## ⚙️ Configuration
 
+### Agent Capabilities
+
+These features were added in the `feat/mem0-memory-integration` branch and are configurable via `agents.defaults` in your config:
+
+| Feature | Config Key | Default | Description |
+|---------|-----------|---------|-------------|
+| Planning | `planning_enabled` | `true` | Decomposes complex tasks into sub-steps before acting |
+| Self-critique | `verification_mode` | `"auto"` | Verifies tool outputs for correctness (`auto`/`always`/`off`) |
+| Streaming | `streaming` | `false` | Stream LLM responses token-by-token |
+| Summary compression | `summary_model` | `""` | LLM model for context window compression (empty = use main model) |
+| Memory cap | `memory_md_token_cap` | `800` | Max tokens injected from MEMORY.md into system prompt |
+| Shell mode | `shell_mode` | `"strict"` | Shell command security (`strict` blocks destructive commands) |
+
+**Rollout flags** (environment variables):
+
+| Variable | Values | Description |
+|----------|--------|-------------|
+| `NANOBOT_RERANKER_MODE` | `disabled`/`shadow`/`enabled` | Cross-encoder re-ranker for memory retrieval |
+| `NANOBOT_RERANKER_ALPHA` | `0.0`–`1.0` | Blend weight (1.0 = pure cross-encoder, 0.0 = pure heuristic) |
+| `NANOBOT_RERANKER_MODEL` | model name | Override re-ranker model (default: `ms-marco-MiniLM-L-6-v2`) |
+
+**Optional dependency**: `pip install nanobot-ai[reranker]` to enable the cross-encoder re-ranker.
+
 Config file: `~/.nanobot/config.json`
 
 ### Providers
@@ -821,6 +848,7 @@ MCP tools are automatically discovered and registered on startup. The LLM can us
 | `nanobot provider login openai-codex` | OAuth login for providers |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot replay-deadletters` | Replay failed messages from dead-letter queue |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
@@ -953,25 +981,63 @@ If you edit the `.service` file itself, run `systemctl --user daemon-reload` bef
 > loginctl enable-linger $USER
 > ```
 
+## 📈 Memory Eval CI Trend
+
+nanobot includes a deterministic CI benchmark for memory retrieval quality.
+
+- Workflow: `.github/workflows/memory-eval-trend.yml`
+- Benchmark cases: `case/memory_eval_cases.json`
+- Baseline thresholds: `case/memory_eval_baseline.json`
+- Runner script: `scripts/memory_eval_ci.py`
+
+The workflow runs on PRs and `main` pushes (memory-related paths), then:
+
+1. Seeds a temporary workspace with deterministic memory events.
+2. Runs retrieval evaluation (Recall@k, Precision@k, hit rate).
+3. Compares results against baseline thresholds.
+4. Publishes markdown summary + JSON artifacts.
+
+Run the same benchmark locally:
+
+```bash
+python scripts/memory_eval_ci.py \
+  --workspace ./.ci/memory-workspace \
+  --cases-file ./case/memory_eval_cases.json \
+  --baseline-file ./case/memory_eval_baseline.json \
+  --output-file ./artifacts/memory_eval_latest.json \
+  --history-file ./artifacts/memory_eval_history.json \
+  --summary-file ./artifacts/memory_eval_summary.md \
+  --strict
+```
+
 ## 📁 Project Structure
 
 ```
 nanobot/
 ├── agent/          # 🧠 Core agent logic
-│   ├── loop.py     #    Agent loop (LLM ↔ tool execution)
-│   ├── context.py  #    Prompt builder
-│   ├── memory.py   #    Persistent memory
-│   ├── skills.py   #    Skills loader
+│   ├── loop.py     #    Agent loop (plan→act→observe→reflect)
+│   ├── context.py  #    Prompt builder + summarization compressor
+│   ├── metrics.py  #    In-memory metrics collector
+│   ├── skills.py   #    Skills loader + custom tool discovery
 │   ├── subagent.py #    Background task execution
-│   └── tools/      #    Built-in tools (incl. spawn)
+│   ├── memory/     #    Persistent memory (decomposed package)
+│   │   ├── store.py       # MemoryStore — main API
+│   │   ├── extractor.py   # LLM + heuristic event extraction
+│   │   ├── mem0_adapter.py # mem0 wrapper with fallback chain
+│   │   ├── reranker.py    # Cross-encoder re-ranker (optional)
+│   │   ├── retrieval.py   # Local keyword search fallback
+│   │   ├── persistence.py # File I/O helpers
+│   │   └── constants.py   # Tool schema definitions
+│   └── tools/      #    Built-in tools (incl. feedback, spawn)
+├── errors.py       # 🛡️ Structured error taxonomy
 ├── skills/         # 🎯 Bundled skills (github, weather, tmux...)
 ├── channels/       # 📱 Chat channel integrations
-├── bus/            # 🚌 Message routing
+├── bus/            # 🚌 Message routing (+ dead-letter queue)
 ├── cron/           # ⏰ Scheduled tasks
 ├── heartbeat/      # 💓 Proactive wake-up
-├── providers/      # 🤖 LLM providers (OpenRouter, etc.)
+├── providers/      # 🤖 LLM providers (streaming support)
 ├── session/        # 💬 Conversation sessions
-├── config/         # ⚙️ Configuration
+├── config/         # ⚙️ Configuration (Pydantic schemas)
 └── cli/            # 🖥️ Commands
 ```
 
@@ -982,10 +1048,11 @@ PRs welcome! The codebase is intentionally small and readable. 🤗
 **Roadmap** — Pick an item and [open a PR](https://github.com/HKUDS/nanobot/pulls)!
 
 - [ ] **Multi-modal** — See and hear (images, voice, video)
-- [ ] **Long-term memory** — Never forget important context
-- [ ] **Better reasoning** — Multi-step planning and reflection
+- [x] **Long-term memory** — mem0-backed persistent memory with hybrid retrieval
+- [x] **Better reasoning** — Multi-step planning, task decomposition, and self-critique
+- [x] **Self-improvement** — Learn from feedback (emoji reactions + explicit feedback tool)
+- [ ] **Multi-modal** — See and hear (images, voice, video)
 - [ ] **More integrations** — Calendar and more
-- [ ] **Self-improvement** — Learn from feedback and mistakes
 
 ### Contributors
 

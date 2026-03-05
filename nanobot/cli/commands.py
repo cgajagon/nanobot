@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 import select
 import sys
+import threading
 
 import typer
 from rich.console import Console
@@ -110,6 +111,22 @@ def _print_agent_response(response: str, render_markdown: bool) -> None:
 def _is_exit_command(command: str) -> bool:
     """Return True when input should end interactive chat."""
     return command.lower() in EXIT_COMMANDS
+
+
+async def _drain_pending_tasks(timeout: float = 0.25) -> None:
+    """Give pending background tasks a brief chance to finish before loop shutdown."""
+    current = asyncio.current_task()
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+    if not pending:
+        return
+    try:
+        await asyncio.wait(pending, timeout=timeout)
+    except Exception:
+        return
 
 
 async def _read_interactive_input_async() -> str:
@@ -226,13 +243,27 @@ def _create_workspace_templates(workspace: Path):
         history_file.write_text("", encoding="utf-8")
         console.print("  [dim]Created memory/HISTORY.md[/dim]")
 
+    events_file = memory_dir / "events.jsonl"
+    if not events_file.exists():
+        events_file.write_text("", encoding="utf-8")
+        console.print("  [dim]Created memory/events.jsonl[/dim]")
+
+    profile_file = memory_dir / "profile.json"
+    if not profile_file.exists():
+        profile_file.write_text("{}", encoding="utf-8")
+        console.print("  [dim]Created memory/profile.json[/dim]")
+
+    metrics_file = memory_dir / "metrics.json"
+    if not metrics_file.exists():
+        metrics_file.write_text("{}", encoding="utf-8")
+        console.print("  [dim]Created memory/metrics.json[/dim]")
+
     (workspace / "skills").mkdir(exist_ok=True)
 
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.litellm_provider import LiteLLMProvider
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.custom_provider import CustomProvider
 
     model = config.agents.defaults.model
@@ -241,6 +272,7 @@ def _make_provider(config: Config):
 
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
+        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
         return OpenAICodexProvider(default_model=model)
 
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
@@ -264,6 +296,15 @@ def _make_provider(config: Config):
         default_model=model,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
+    )
+
+
+def _make_agent_config(config: Config) -> "AgentConfig":
+    """Build an ``AgentConfig`` from the root ``Config``."""
+    from nanobot.config.schema import AgentConfig
+    return AgentConfig.from_defaults(
+        config.agents.defaults,
+        restrict_to_workspace=config.tools.restrict_to_workspace,
     )
 
 
@@ -306,16 +347,10 @@ def gateway(
     agent = AgentLoop(
         bus=bus,
         provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        config=_make_agent_config(config),
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
@@ -438,6 +473,11 @@ def agent(
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
+    timeout_s: int = typer.Option(
+        180,
+        "--timeout",
+        help="Timeout in seconds for single-message mode (--message). Use 0 to disable.",
+    ),
 ):
     """Interact with the agent directly."""
     from nanobot.config.loader import load_config, get_data_dir
@@ -463,16 +503,10 @@ def agent(
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        config=_make_agent_config(config),
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
     )
@@ -496,12 +530,46 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
-            with _thinking_ctx():
-                response = await agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
-            _print_agent_response(response, render_markdown=markdown)
-            await agent_loop.close_mcp()
+            try:
+                with _thinking_ctx():
+                    coro = agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
+                    if timeout_s > 0:
+                        response = await asyncio.wait_for(coro, timeout=float(timeout_s))
+                    else:
+                        response = await coro
+                _print_agent_response(response, render_markdown=markdown)
+            except TimeoutError:
+                console.print(
+                    f"[red]Error:[/red] agent timed out after {timeout_s}s in single-message mode."
+                )
+                raise typer.Exit(124)
+            finally:
+                agent_loop.stop()
+                try:
+                    await asyncio.wait_for(agent_loop.close_mcp(), timeout=5.0)
+                except TimeoutError:
+                    console.print("[yellow]Warning:[/yellow] timed out while closing provider/MCP resources.")
+                try:
+                    await asyncio.wait_for(_drain_pending_tasks(), timeout=2.0)
+                except TimeoutError:
+                    pass
 
-        asyncio.run(run_once())
+        watchdog: threading.Timer | None = None
+        if timeout_s > 0:
+            def _hard_timeout_kill() -> None:
+                # Last-resort guard for blocking calls that ignore cancellation.
+                os.write(2, f"\nError: agent exceeded hard timeout ({timeout_s}s)\n".encode("utf-8"))
+                os._exit(124)
+
+            watchdog = threading.Timer(float(timeout_s), _hard_timeout_kill)
+            watchdog.daemon = True
+            watchdog.start()
+
+        try:
+            asyncio.run(run_once())
+        finally:
+            if watchdog:
+                watchdog.cancel()
     else:
         # Interactive mode — route through bus like other channels
         from nanobot.bus.events import InboundMessage
@@ -595,6 +663,7 @@ def agent(
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
                 await agent_loop.close_mcp()
+                await _drain_pending_tasks()
 
         asyncio.run(run_interactive())
 
@@ -954,15 +1023,9 @@ def cron_run(
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        temperature=config.agents.defaults.temperature,
-        max_tokens=config.agents.defaults.max_tokens,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        memory_window=config.agents.defaults.memory_window,
+        config=_make_agent_config(config),
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
     )
@@ -998,6 +1061,727 @@ def cron_run(
 # ============================================================================
 # Status Commands
 # ============================================================================
+
+
+memory_app = typer.Typer(help="Manage memory system")
+app.add_typer(memory_app, name="memory")
+
+def _memory_rollout_overrides(config: Config) -> dict[str, object]:
+    defaults = config.agents.defaults
+    return {
+        "memory_rollout_mode": defaults.memory_rollout_mode,
+        "memory_type_separation_enabled": defaults.memory_type_separation_enabled,
+        "memory_router_enabled": defaults.memory_router_enabled,
+        "memory_reflection_enabled": defaults.memory_reflection_enabled,
+        "memory_shadow_mode": defaults.memory_shadow_mode,
+        "memory_shadow_sample_rate": defaults.memory_shadow_sample_rate,
+        "memory_vector_health_enabled": defaults.memory_vector_health_enabled,
+        "memory_auto_reindex_on_empty_vector": defaults.memory_auto_reindex_on_empty_vector,
+        "memory_history_fallback_enabled": defaults.memory_history_fallback_enabled,
+        "memory_fallback_allowed_sources": defaults.memory_fallback_allowed_sources,
+        "memory_fallback_max_summary_chars": defaults.memory_fallback_max_summary_chars,
+        "rollout_gates": {
+            "min_recall_at_k": defaults.memory_rollout_gate_min_recall_at_k,
+            "min_precision_at_k": defaults.memory_rollout_gate_min_precision_at_k,
+            "max_avg_memory_context_tokens": defaults.memory_rollout_gate_max_avg_memory_context_tokens,
+            "max_history_fallback_ratio": defaults.memory_rollout_gate_max_history_fallback_ratio,
+        },
+    }
+
+
+@memory_app.command("inspect")
+def memory_inspect(
+    query: str = typer.Option("", "--query", "-q", help="Optional retrieval query"),
+    top_k: int = typer.Option(6, "--top-k", "-k", help="Top-k memories to display"),
+):
+    """Inspect memory profile, metrics, and retrieval results."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+
+    observability = store.get_observability_report()
+    metrics = observability.get("metrics", {})
+    kpis = observability.get("kpis", {})
+    backend = observability.get("backend", {}) if isinstance(observability, dict) else {}
+    profile = store.read_profile()
+    report = store.verify_memory()
+    events = store.read_events()
+
+    console.print(f"{__logo__} Memory Inspect\n")
+    console.print("Mode: [cyan]mem0[/cyan]")
+    console.print(f"mem0 enabled: [cyan]{backend.get('mem0_enabled', False)}[/cyan]")
+    console.print(f"mem0 mode: [cyan]{backend.get('mem0_mode', 'disabled')}[/cyan]")
+    console.print(f"vector points: [cyan]{backend.get('vector_points_count', 0)}[/cyan]")
+    console.print(f"mem0 get_all count: [cyan]{backend.get('mem0_get_all_count', 0)}[/cyan]")
+    console.print(f"history rows: [cyan]{backend.get('history_rows_count', 0)}[/cyan]")
+    console.print(f"vector health: [cyan]{backend.get('vector_health_state', 'unknown')}[/cyan]")
+    console.print(f"mem0 add mode: [cyan]{backend.get('mem0_add_mode', '')}[/cyan]")
+    console.print(f"Events: [green]{len(events)}[/green]")
+    console.print(f"Profile items: [green]{report['profile_items']}[/green]")
+    console.print(f"Open conflicts: [yellow]{report['open_conflicts']}[/yellow]")
+    console.print(f"Stale events: [yellow]{report['stale_events']}[/yellow]\n")
+
+    table = Table(title="Memory Metrics")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    for key in (
+        "consolidations",
+        "messages_processed",
+        "user_messages_processed",
+        "user_corrections",
+        "events_extracted",
+        "event_dedup_merges",
+        "profile_updates_applied",
+        "retrieval_queries",
+        "retrieval_hits",
+        "conflicts_detected",
+        "memory_context_calls",
+        "memory_context_tokens_total",
+        "memory_context_tokens_max",
+        "last_updated",
+    ):
+        table.add_row(key, str(metrics.get(key, 0)))
+    console.print(table)
+
+    kpi_table = Table(title="Memory KPIs")
+    kpi_table.add_column("KPI", style="cyan")
+    kpi_table.add_column("Value", style="green")
+    kpi_table.add_row("retrieval_hit_rate", str(kpis.get("retrieval_hit_rate", 0.0)))
+    kpi_table.add_row("contradiction_rate_per_100_messages", str(kpis.get("contradiction_rate_per_100_messages", 0.0)))
+    kpi_table.add_row("user_correction_rate_per_100_user_messages", str(kpis.get("user_correction_rate_per_100_user_messages", 0.0)))
+    kpi_table.add_row("avg_memory_context_tokens", str(kpis.get("avg_memory_context_tokens", 0.0)))
+    kpi_table.add_row("max_memory_context_tokens", str(kpis.get("max_memory_context_tokens", 0)))
+    console.print(kpi_table)
+
+    if query.strip():
+        retrieved = store.retrieve(
+            query,
+            top_k=top_k,
+        )
+        if not retrieved:
+            console.print("\n[dim]No memory retrieved for query.[/dim]")
+            return
+        out = Table(title=f"Top Memories for: {query}")
+        out.add_column("When", style="cyan")
+        out.add_column("Type", style="magenta")
+        out.add_column("Score", style="green")
+        out.add_column("Summary")
+        for item in retrieved:
+            out.add_row(
+                str(item.get("timestamp", ""))[:16],
+                str(item.get("type", "fact")),
+                f"{float(item.get('score', 0.0)):.3f}",
+                str(item.get("summary", "")),
+            )
+        console.print()
+        console.print(out)
+
+    pref_count = len(profile.get("preferences", [])) if isinstance(profile.get("preferences"), list) else 0
+    fact_count = len(profile.get("stable_facts", [])) if isinstance(profile.get("stable_facts"), list) else 0
+    console.print(f"\nProfile breakdown: preferences={pref_count}, stable_facts={fact_count}")
+
+
+@memory_app.command("metrics")
+def memory_metrics(
+    delta: bool = typer.Option(False, "--delta", help="Show metric deltas vs baseline snapshot"),
+    write_baseline: bool = typer.Option(False, "--write-baseline", help="Write current metrics snapshot as baseline"),
+    baseline_file: str = typer.Option("", "--baseline-file", help="Optional baseline JSON path"),
+):
+    """Show memory metrics and optional deltas against a saved baseline snapshot."""
+    import json
+    from datetime import datetime, timezone
+
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    observability = store.get_observability_report()
+    metrics = observability.get("metrics", {}) if isinstance(observability, dict) else {}
+    kpis = observability.get("kpis", {}) if isinstance(observability, dict) else {}
+    baseline_path = Path(baseline_file).expanduser() if baseline_file else (config.workspace_path / "memory" / "reports" / "metrics_baseline.json")
+
+    if write_baseline:
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "metrics": metrics,
+            "kpis": kpis,
+        }
+        baseline_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[green]✓[/green] Wrote baseline snapshot: {baseline_path}")
+
+    if delta:
+        if not baseline_path.exists():
+            console.print(f"[red]Baseline file not found:[/red] {baseline_path}")
+            console.print("[dim]Run with --write-baseline first.[/dim]")
+            raise typer.Exit(1)
+        try:
+            payload = json.loads(baseline_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            console.print(f"[red]Failed to parse baseline file:[/red] {exc}")
+            raise typer.Exit(1)
+        baseline_metrics = payload.get("metrics", {}) if isinstance(payload, dict) else {}
+        baseline_kpis = payload.get("kpis", {}) if isinstance(payload, dict) else {}
+
+        keys = (
+            "retrieval_queries",
+            "retrieval_hits",
+            "retrieval_candidates",
+            "retrieval_returned",
+            "retrieval_source_vector_count",
+            "retrieval_source_get_all_count",
+            "retrieval_source_history_count",
+            "retrieval_rejected_blob_count",
+            "conflicts_detected",
+            "user_corrections",
+            "events_extracted",
+            "event_dedup_merges",
+            "profile_updates_applied",
+            "memory_context_calls",
+            "memory_context_tokens_total",
+        )
+        table = Table(title="Memory Metrics Delta")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Baseline", style="yellow")
+        table.add_column("Current", style="green")
+        table.add_column("Delta", style="magenta")
+        for key in keys:
+            baseline_value = int(baseline_metrics.get(key, 0) or 0)
+            current_value = int(metrics.get(key, 0) or 0)
+            delta_value = current_value - baseline_value
+            table.add_row(key, str(baseline_value), str(current_value), f"{delta_value:+d}")
+        console.print(table)
+
+        kpi_table = Table(title="Memory KPI Delta")
+        kpi_table.add_column("KPI", style="cyan")
+        kpi_table.add_column("Baseline", style="yellow")
+        kpi_table.add_column("Current", style="green")
+        kpi_table.add_column("Delta", style="magenta")
+        for key in ("retrieval_hit_rate", "history_fallback_ratio", "avg_memory_context_tokens", "avg_shadow_overlap"):
+            baseline_value = float(baseline_kpis.get(key, 0.0) or 0.0)
+            current_value = float(kpis.get(key, 0.0) or 0.0)
+            delta_value = current_value - baseline_value
+            kpi_table.add_row(key, f"{baseline_value:.4f}", f"{current_value:.4f}", f"{delta_value:+.4f}")
+        console.print(kpi_table)
+        console.print(f"[dim]Baseline file: {baseline_path}[/dim]")
+        return
+
+    table = Table(title="Memory Metrics (Current)")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    for key in (
+        "retrieval_queries",
+        "retrieval_hits",
+        "retrieval_candidates",
+        "retrieval_returned",
+        "retrieval_source_vector_count",
+        "retrieval_source_get_all_count",
+        "retrieval_source_history_count",
+        "retrieval_rejected_blob_count",
+        "events_extracted",
+        "event_dedup_merges",
+        "profile_updates_applied",
+        "conflicts_detected",
+        "user_corrections",
+    ):
+        table.add_row(key, str(metrics.get(key, 0)))
+    console.print(table)
+
+
+@memory_app.command("rebuild")
+def memory_rebuild(
+    max_events: int = typer.Option(30, "--max-events", help="Max recent events for MEMORY.md snapshot"),
+):
+    """Rebuild memory/MEMORY.md from structured memory profile and events."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    snapshot = store.rebuild_memory_snapshot(max_events=max_events, write=True)
+    line_count = len(snapshot.splitlines())
+    console.print(f"[green]✓[/green] Rebuilt MEMORY.md with {line_count} lines")
+
+
+@memory_app.command("reindex")
+def memory_reindex(
+    max_events: int = typer.Option(0, "--max-events", help="Optional max events to include (0 = all)"),
+    reset: bool = typer.Option(
+        True,
+        "--reset/--no-reset",
+        help="Reset mem0 user memories before rebuilding from structured memory.",
+    ),
+):
+    """Reindex mem0 vectors from structured profile/events only."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    result = store.reindex_from_structured_memory(
+        max_events=max_events if max_events > 0 else None,
+        reset_existing=reset,
+        compact=False,
+    )
+    table = Table(title="Memory Reindex")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("ok", str(result.get("ok")))
+    table.add_row("reason", str(result.get("reason", "")))
+    table.add_row("written", str(result.get("written", 0)))
+    table.add_row("failed", str(result.get("failed", 0)))
+    table.add_row("events_indexed", str(result.get("events_indexed", 0)))
+    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
+    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
+    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
+    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
+    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
+    console.print(table)
+
+
+@memory_app.command("compact")
+def memory_compact(
+    max_events: int = typer.Option(0, "--max-events", help="Optional max events to include (0 = all)"),
+    reset: bool = typer.Option(
+        True,
+        "--reset/--no-reset",
+        help="Reset mem0 user memories before compact rebuild.",
+    ),
+):
+    """Compact backend memory (dedup/drop superseded) and rebuild mem0 from structured sources."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    result = store.reindex_from_structured_memory(
+        max_events=max_events if max_events > 0 else None,
+        reset_existing=reset,
+        compact=True,
+    )
+    table = Table(title="Memory Compaction")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("ok", str(result.get("ok")))
+    table.add_row("reason", str(result.get("reason", "")))
+    table.add_row("written", str(result.get("written", 0)))
+    table.add_row("failed", str(result.get("failed", 0)))
+    table.add_row("events_before_compaction", str(result.get("events_before_compaction", 0)))
+    table.add_row("events_after_compaction", str(result.get("events_after_compaction", 0)))
+    table.add_row("events_superseded_dropped", str(result.get("events_superseded_dropped", 0)))
+    table.add_row("events_duplicates_dropped", str(result.get("events_duplicates_dropped", 0)))
+    table.add_row("vector_points_after", str(result.get("vector_points_after", 0)))
+    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
+    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
+    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
+    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
+    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
+    console.print(table)
+
+
+@memory_app.command("verify")
+def memory_verify(
+    stale_days: int = typer.Option(90, "--stale-days", help="Age threshold for stale events without TTL"),
+):
+    """Verify memory consistency and freshness."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    report = store.verify_memory(stale_days=stale_days, update_profile=True)
+
+    table = Table(title="Memory Verification")
+    table.add_column("Check", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("events", str(report["events"]))
+    table.add_row("profile_items", str(report["profile_items"]))
+    table.add_row("open_conflicts", str(report["open_conflicts"]))
+    table.add_row("stale_events", str(report["stale_events"]))
+    table.add_row("stale_profile_items", str(report["stale_profile_items"]))
+    table.add_row("ttl_tracked_events", str(report["ttl_tracked_events"]))
+    table.add_row("last_verified_at", str(report["last_verified_at"]))
+    console.print(table)
+
+    if report["open_conflicts"] > 0:
+        raise typer.Exit(2)
+
+
+@memory_app.command("eval")
+def memory_eval(
+    cases_file: str = typer.Option("", "--cases-file", help="Path to JSON benchmark cases file"),
+    top_k: int = typer.Option(6, "--top-k", "-k", help="Default top-k when case does not specify it"),
+    seeded_profile: str = typer.Option("", "--seeded-profile", help="Optional seeded profile JSON path"),
+    seeded_events: str = typer.Option("", "--seeded-events", help="Optional seeded events JSONL path"),
+    seed_only: bool = typer.Option(False, "--seed-only", help="Seed + reindex only, do not run evaluation"),
+    export: bool = typer.Option(False, "--export", help="Save evaluation report JSON under memory/reports/"),
+    output_file: str = typer.Option("", "--output-file", help="Optional JSON output path (implies --export)"),
+):
+    """Evaluate memory retrieval quality (Recall@k, Precision@k) plus runtime KPIs."""
+    import json
+
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+
+    if seeded_profile or seeded_events:
+        if not seeded_profile or not seeded_events:
+            console.print("[red]Both --seeded-profile and --seeded-events are required together.[/red]")
+            raise typer.Exit(1)
+        seed_result = store.seed_structured_corpus(
+            profile_path=Path(seeded_profile).expanduser(),
+            events_path=Path(seeded_events).expanduser(),
+        )
+        seed_table = Table(title="Seeded Corpus")
+        seed_table.add_column("Field", style="cyan")
+        seed_table.add_column("Value", style="green")
+        seed_table.add_row("ok", str(seed_result.get("ok", False)))
+        seed_table.add_row("reason", str(seed_result.get("reason", "")))
+        seed_table.add_row("seeded_profile_items", str(seed_result.get("seeded_profile_items", 0)))
+        seed_table.add_row("seeded_events", str(seed_result.get("seeded_events", 0)))
+        reindex_payload = seed_result.get("reindex", {}) if isinstance(seed_result.get("reindex"), dict) else {}
+        seed_table.add_row("reindex_written", str(reindex_payload.get("written", 0)))
+        seed_table.add_row("reindex_failed", str(reindex_payload.get("failed", 0)))
+        seed_table.add_row("vector_points_after", str(reindex_payload.get("vector_points_after", 0)))
+        console.print(seed_table)
+        if not bool(seed_result.get("ok")):
+            raise typer.Exit(2)
+        if seed_only:
+            console.print("[green]✓[/green] Seed-only completed.")
+            return
+
+    path = Path(cases_file) if cases_file else (config.workspace_path / "memory" / "eval_cases.json")
+    if not path.exists():
+        template = {
+            "cases": [
+                {
+                    "query": "oauth2 authentication",
+                    "expected_any": ["oauth2", "authentication"],
+                    "top_k": 6,
+                }
+            ]
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(template, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"[yellow]Created template benchmark file:[/yellow] {path}")
+        console.print("[dim]Edit it and run `nanobot memory eval` again.[/dim]")
+        raise typer.Exit(1)
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        console.print(f"[red]Failed to parse benchmark file:[/red] {exc}")
+        raise typer.Exit(1)
+
+    raw_cases = payload.get("cases") if isinstance(payload, dict) else payload
+    if not isinstance(raw_cases, list):
+        console.print("[red]Benchmark file must contain a JSON array or {'cases': [...]}[/red]")
+        raise typer.Exit(1)
+
+    evaluation = store.evaluate_retrieval_cases(
+        raw_cases,
+        default_top_k=top_k,
+    )
+    obs = store.get_observability_report()
+    rollout_gate = store.evaluate_rollout_gates(evaluation, obs)
+    eval_summary = evaluation.get("summary", {})
+    kpis = obs.get("kpis", {})
+
+    table = Table(title="Memory Evaluation")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("cases", str(evaluation.get("cases", 0)))
+    table.add_row("recall_at_k", str(eval_summary.get("recall_at_k", 0.0)))
+    table.add_row("precision_at_k", str(eval_summary.get("precision_at_k", 0.0)))
+    table.add_row("retrieval_hit_rate", str(kpis.get("retrieval_hit_rate", 0.0)))
+    table.add_row("contradiction_rate_per_100_messages", str(kpis.get("contradiction_rate_per_100_messages", 0.0)))
+    table.add_row("user_correction_rate_per_100_user_messages", str(kpis.get("user_correction_rate_per_100_user_messages", 0.0)))
+    table.add_row("avg_memory_context_tokens", str(kpis.get("avg_memory_context_tokens", 0.0)))
+    table.add_row("avg_shadow_overlap", str(kpis.get("avg_shadow_overlap", 0.0)))
+    table.add_row("rollout_gate_passed", str(rollout_gate.get("passed", False)))
+    console.print(table)
+
+    gate_checks = rollout_gate.get("checks", [])
+    if gate_checks:
+        gate_table = Table(title="Rollout Gates")
+        gate_table.add_column("Gate", style="cyan")
+        gate_table.add_column("Actual", style="green")
+        gate_table.add_column("Target")
+        gate_table.add_column("Pass")
+        for check in gate_checks:
+            gate_table.add_row(
+                str(check.get("name", "")),
+                str(check.get("actual", "")),
+                f"{check.get('op', '')} {check.get('threshold', '')}",
+                "yes" if bool(check.get("passed")) else "no",
+            )
+        console.print(gate_table)
+
+    details = evaluation.get("evaluated", [])
+    if details:
+        detail_table = Table(title="Case Breakdown")
+        detail_table.add_column("Query", style="cyan")
+        detail_table.add_column("TopK")
+        detail_table.add_column("Expected")
+        detail_table.add_column("Hits", style="green")
+        detail_table.add_column("Recall@k", style="green")
+        detail_table.add_column("Precision@k", style="green")
+        detail_table.add_column("Why Missed")
+        for item in details[:20]:
+            why_missed = item.get("why_missed", [])
+            detail_table.add_row(
+                str(item.get("query", ""))[:60],
+                str(item.get("top_k", "")),
+                str(item.get("expected", "")),
+                str(item.get("hits", "")),
+                str(item.get("case_recall_at_k", "")),
+                str(item.get("case_precision_at_k", "")),
+                ",".join(str(x) for x in why_missed) if isinstance(why_missed, list) else "",
+            )
+        console.print(detail_table)
+
+    if export or output_file:
+        saved = store.save_evaluation_report(
+            evaluation,
+            obs,
+            rollout={
+                "status": store.get_rollout_status(),
+                "gates": rollout_gate,
+            },
+            output_file=output_file or None,
+        )
+        console.print(f"[green]✓[/green] Saved report: {saved}")
+
+
+@memory_app.command("conflicts")
+def memory_conflicts(
+    all: bool = typer.Option(False, "--all", help="Include resolved conflicts"),
+):
+    """List memory conflicts for manual review."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    rows = store.list_conflicts(include_closed=all)
+    if not rows:
+        console.print("No conflicts found.")
+        return
+
+    table = Table(title="Memory Conflicts")
+    table.add_column("Index", style="cyan")
+    table.add_column("Field")
+    table.add_column("Old")
+    table.add_column("Old Mem0 ID", style="dim")
+    table.add_column("New")
+    table.add_column("New Mem0 ID", style="dim")
+    table.add_column("Status", style="yellow")
+    for item in rows:
+        table.add_row(
+            str(item.get("index", "")),
+            str(item.get("field", "")),
+            str(item.get("old", ""))[:70],
+            str(item.get("old_memory_id", ""))[:24],
+            str(item.get("new", ""))[:70],
+            str(item.get("new_memory_id", ""))[:24],
+            str(item.get("status", "")),
+        )
+    console.print(table)
+
+
+@memory_app.command("resolve")
+def memory_resolve(
+    index: int = typer.Option(..., "--index", help="Conflict index from `nanobot memory conflicts`"),
+    action: str = typer.Option(..., "--action", help="Resolution: keep_old | keep_new | dismiss"),
+):
+    """Resolve a single memory conflict."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    details = store.resolve_conflict_details(index=index, action=action)
+    if not details.get("ok"):
+        console.print("[red]Failed to resolve conflict. Check index/action.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✓[/green] Conflict {index} resolved with action '{action}'")
+    console.print(
+        "mem0 operation: "
+        f"[cyan]{details.get('mem0_operation', 'none')}[/cyan], "
+        f"ok=[cyan]{details.get('mem0_ok', False)}[/cyan]"
+    )
+    if details.get("old_memory_id") or details.get("new_memory_id"):
+        console.print(
+            "mem0 ids: "
+            f"old=[dim]{details.get('old_memory_id', '')}[/dim] "
+            f"new=[dim]{details.get('new_memory_id', '')}[/dim]"
+        )
+
+
+@memory_app.command("pin")
+def memory_pin(
+    field: str = typer.Option(..., "--field", help="Profile field (preferences|stable_facts|active_projects|relationships|constraints)"),
+    text: str = typer.Option(..., "--text", help="Memory text to pin"),
+):
+    """Pin a memory item so it is prioritized in snapshots and context."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    try:
+        ok = store.set_item_pin(field, text, pinned=True)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not ok:
+        raise typer.Exit(1)
+    console.print(f"[green]✓[/green] Pinned memory item in '{field}'")
+
+
+@memory_app.command("unpin")
+def memory_unpin(
+    field: str = typer.Option(..., "--field", help="Profile field"),
+    text: str = typer.Option(..., "--text", help="Memory text to unpin"),
+):
+    """Unpin a memory item."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    try:
+        ok = store.set_item_pin(field, text, pinned=False)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not ok:
+        raise typer.Exit(1)
+    console.print(f"[green]✓[/green] Unpinned memory item in '{field}'")
+
+
+@memory_app.command("outdated")
+def memory_outdated(
+    field: str = typer.Option(..., "--field", help="Profile field"),
+    text: str = typer.Option(..., "--text", help="Memory text to mark outdated"),
+):
+    """Mark a memory item as outdated (stale)."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.memory import MemoryStore
+
+    config = load_config()
+    store = MemoryStore(
+        config.workspace_path,
+        rollout_overrides=_memory_rollout_overrides(config),
+    )
+    try:
+        ok = store.mark_item_outdated(field, text)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    if not ok:
+        console.print("[red]Memory item not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]✓[/green] Marked memory item as outdated in '{field}'")
+
+
+@app.command("replay-deadletters")
+def replay_deadletters(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be replayed without sending."),
+):
+    """Replay undelivered outbound messages from the dead-letter file."""
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    workspace = config.workspace_path
+    dead_letter_path = workspace / "outbound_failed.jsonl"
+
+    if not dead_letter_path.exists():
+        console.print("[dim]No dead-letter file found — nothing to replay.[/dim]")
+        raise typer.Exit(0)
+
+    import json
+    lines = [l.strip() for l in dead_letter_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    if not lines:
+        console.print("[dim]Dead-letter file is empty — nothing to replay.[/dim]")
+        raise typer.Exit(0)
+
+    console.print(f"Found [bold]{len(lines)}[/bold] dead-letter message(s) in {dead_letter_path}\n")
+
+    if dry_run:
+        for i, line in enumerate(lines, 1):
+            try:
+                entry = json.loads(line)
+                channel = entry.get("channel", "?")
+                chat_id = entry.get("chat_id", "?")
+                content_preview = (entry.get("content", ""))[:80]
+                error = entry.get("error", "")
+                console.print(f"  {i}. [{channel}:{chat_id}] {content_preview}")
+                if error:
+                    console.print(f"     [dim]error: {error}[/dim]")
+            except json.JSONDecodeError:
+                console.print(f"  {i}. [red]invalid JSON line[/red]")
+        console.print(f"\n[dim]Dry run — no messages sent. Use without --dry-run to replay.[/dim]")
+        raise typer.Exit(0)
+
+    # Real replay requires starting channels
+    from nanobot.bus.queue import MessageBus
+
+    bus = MessageBus()
+    from nanobot.channels.manager import ChannelManager
+
+    manager = ChannelManager(config, bus)
+    if not manager.channels:
+        console.print("[red]No channels available for replay.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Channels: {', '.join(manager.enabled_channels)}")
+
+    async def _run():
+        return await manager.replay_dead_letters(dry_run=False)
+
+    total, ok, fail = asyncio.run(_run())
+    console.print(f"\nReplay complete: [green]{ok} sent[/green], [red]{fail} failed[/red] (of {total})")
+    if fail:
+        console.print(f"[dim]Failed messages remain in {dead_letter_path}[/dim]")
 
 
 @app.command()

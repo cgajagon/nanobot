@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.agent.tools.base import ToolResult
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -15,6 +16,80 @@ from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
+
+
+# ---------------------------------------------------------------------------
+# Shared lightweight agent loop (used by both AgentLoop and SubagentManager)
+# ---------------------------------------------------------------------------
+
+async def run_tool_loop(
+    *,
+    provider: LLMProvider,
+    tools: ToolRegistry,
+    messages: list[dict[str, Any]],
+    model: str,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    max_iterations: int = 15,
+) -> tuple[str | None, list[str], list[dict[str, Any]]]:
+    """A reusable think→act→observe loop shared between the main agent and subagents.
+
+    Returns ``(final_content, tools_used, messages)``.
+    """
+    iteration = 0
+    final_result: str | None = None
+    tools_used: list[str] = []
+
+    while iteration < max_iterations:
+        iteration += 1
+
+        response = await provider.chat(
+            messages=messages,
+            tools=tools.get_definitions(),
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        if response.has_tool_calls:
+            # Add assistant message with tool calls
+            tool_call_dicts = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                    },
+                }
+                for tc in response.tool_calls
+            ]
+            messages.append({
+                "role": "assistant",
+                "content": response.content or "",
+                "tool_calls": tool_call_dicts,
+            })
+
+            # Execute tools
+            for tool_call in response.tool_calls:
+                tools_used.append(tool_call.name)
+                args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                logger.debug("Executing: {} with arguments: {}", tool_call.name, args_str[:200])
+                result = await tools.execute(tool_call.name, tool_call.arguments)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_call.name,
+                    "content": result.to_llm_string() if isinstance(result, ToolResult) else str(result),
+                })
+        else:
+            final_result = response.content
+            break
+
+    if final_result is None:
+        final_result = "Task completed but no final response was generated."
+
+    return final_result, tools_used, messages
 
 
 class SubagentManager:
@@ -122,61 +197,19 @@ class SubagentManager:
                 {"role": "user", "content": task},
             ]
             
-            # Run agent loop (limited iterations)
-            max_iterations = 15
-            iteration = 0
-            final_result: str | None = None
-            
-            while iteration < max_iterations:
-                iteration += 1
-                
-                response = await self.provider.chat(
-                    messages=messages,
-                    tools=tools.get_definitions(),
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-                
-                if response.has_tool_calls:
-                    # Add assistant message with tool calls
-                    tool_call_dicts = [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ]
-                    messages.append({
-                        "role": "assistant",
-                        "content": response.content or "",
-                        "tool_calls": tool_call_dicts,
-                    })
-                    
-                    # Execute tools
-                    for tool_call in response.tool_calls:
-                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                        logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": result,
-                        })
-                else:
-                    final_result = response.content
-                    break
-            
-            if final_result is None:
-                final_result = "Task completed but no final response was generated."
+            # Reuse the shared tool loop
+            final_result, _tools_used, _msgs = await run_tool_loop(
+                provider=self.provider,
+                tools=tools,
+                messages=messages,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                max_iterations=15,
+            )
             
             logger.info("Subagent [{}] completed successfully", task_id)
-            await self._announce_result(task_id, label, task, final_result, origin, "ok")
+            await self._announce_result(task_id, label, task, final_result or "", origin, "ok")
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
