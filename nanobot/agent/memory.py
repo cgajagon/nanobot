@@ -1186,6 +1186,85 @@ class _Mem0Adapter:
             return False
 
 
+# ---------------------------------------------------------------------------
+# Local keyword-based event retrieval (fallback when mem0 is unavailable)
+# ---------------------------------------------------------------------------
+
+
+def _tokenize_for_search(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens (≥2 chars) for keyword overlap scoring."""
+    return {t for t in re.findall(r"[a-z0-9_\-]+", text.lower()) if len(t) >= 2}
+
+
+def _keyword_score(query_tokens: set[str], event: dict[str, Any]) -> float:
+    """Score an event against a query using token overlap on summary + entities.
+
+    Returns a value in [0, 1].
+    """
+    summary = str(event.get("summary", ""))
+    entities = " ".join(str(e) for e in event.get("entities", []) if isinstance(e, str))
+    event_tokens = _tokenize_for_search(f"{summary} {entities}")
+    if not query_tokens or not event_tokens:
+        return 0.0
+    overlap = len(query_tokens & event_tokens)
+    return overlap / max(len(query_tokens), 1)
+
+
+def _local_retrieve(
+    events: list[dict[str, Any]],
+    query: str,
+    *,
+    top_k: int = 6,
+    recency_half_life_days: float | None = None,
+) -> list[dict[str, Any]]:
+    """Retrieve events from a list using keyword overlap scoring.
+
+    Optionally applies exponential recency decay.
+    """
+    query_tokens = _tokenize_for_search(query)
+    if not query_tokens:
+        return []
+
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, dict[str, Any]]] = []
+
+    for event in events:
+        if str(event.get("status", "")).lower() == "superseded":
+            continue
+        score = _keyword_score(query_tokens, event)
+        if score <= 0:
+            continue
+
+        # Optional recency boost
+        if recency_half_life_days and recency_half_life_days > 0:
+            ts_str = str(event.get("timestamp", ""))
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                days_old = max((now - ts).total_seconds() / 86400, 0)
+                decay = math.exp(-0.693 * days_old / recency_half_life_days)
+                score *= (0.5 + 0.5 * decay)
+            except (ValueError, TypeError):
+                pass
+
+        scored.append((score, event))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results: list[dict[str, Any]] = []
+    for score, event in scored[:top_k]:
+        result = dict(event)
+        result["retrieval_reason"] = {
+            "provider": "keyword",
+            "backend": "jsonl",
+            "score": round(score, 4),
+        }
+        result["provenance"] = {
+            "canonical_id": str(event.get("canonical_id", event.get("id", ""))),
+            "evidence_count": max(int(event.get("merged_event_count", 1)), 1),
+        }
+        results.append(result)
+    return results
+
+
 class _Mem0RuntimeInfo:
     """Compatibility surface for places that introspect backend name."""
 
@@ -1217,7 +1296,14 @@ class MemoryStore:
     EPISODIC_STATUS_RESOLVED = "resolved"
     ROLLOUT_MODES = {"enabled", "shadow", "disabled"}
 
-    def __init__(self, workspace: Path, rollout_overrides: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        rollout_overrides: dict[str, Any] | None = None,
+        *,
+        embedding_provider: str | None = None,
+        vector_backend: str | None = None,
+    ):
         self.workspace = workspace
         self.persistence = MemoryPersistence(workspace)
         self.memory_dir = self.persistence.memory_dir
@@ -1226,6 +1312,7 @@ class MemoryStore:
         self.events_file = self.persistence.events_file
         self.profile_file = self.persistence.profile_file
         self.metrics_file = self.persistence.metrics_file
+        self.index_dir: Path = self.memory_dir / "index"
         self.retriever = _Mem0RuntimeInfo()
         self.extractor = MemoryExtractor(
             to_str_list=self._to_str_list,
@@ -2396,6 +2483,8 @@ class MemoryStore:
         cases: list[dict[str, Any]],
         *,
         default_top_k: int = 6,
+        recency_half_life_days: float | None = None,
+        embedding_provider: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate retrieval quality using labeled cases.
 
@@ -2470,6 +2559,8 @@ class MemoryStore:
             retrieved = self.retrieve(
                 query,
                 top_k=top_k,
+                recency_half_life_days=recency_half_life_days,
+                embedding_provider=embedding_provider,
             )
 
             hits = 0
@@ -2787,6 +2878,7 @@ class MemoryStore:
                 or semantic >= 0.94
                 or (lexical >= 0.6 and semantic >= 0.86)
                 or (entity_overlap >= 0.33 and (lexical >= 0.42 or semantic >= 0.52))
+                or (entity_overlap >= 0.30 and lexical >= 0.25 and candidate_type == str(existing.get("type", "")))
             )
             if not is_duplicate:
                 continue
@@ -3179,7 +3271,10 @@ class MemoryStore:
     def _auto_resolution_action(self, conflict: dict[str, Any]) -> str | None:
         source = str(conflict.get("source", "")).strip().lower()
         if source == "live_correction":
-            return "keep_new"
+            # Live corrections surface conflicts for user review rather than
+            # silently auto-resolving.  The user explicitly stated a change so
+            # the conflict should be presented via ask_user_for_conflict().
+            return None
 
         old_conf = self._safe_float(conflict.get("old_confidence"), 0.0)
         new_conf = self._safe_float(conflict.get("new_confidence"), 0.0)
@@ -3413,7 +3508,7 @@ class MemoryStore:
             return result
 
         result["mem0_ok"] = mem0_ok
-        if not mem0_ok:
+        if not mem0_ok and self.mem0.enabled:
             return result
 
         profile[key] = values
@@ -3510,10 +3605,23 @@ class MemoryStore:
         query: str,
         *,
         top_k: int = 6,
+        recency_half_life_days: float | None = None,
+        embedding_provider: str | None = None,
     ) -> list[dict[str, Any]]:
-        # mem0-only retrieval path.
+        # Local keyword fallback when mem0 is unavailable.
         if not self.mem0.enabled:
-            return []
+            events = self.read_events()
+            results = _local_retrieve(
+                events,
+                query,
+                top_k=top_k,
+                recency_half_life_days=recency_half_life_days,
+            )
+            self._record_metric("retrieval_queries", 1)
+            if results:
+                self._record_metric("retrieval_hits", 1)
+            self._record_metric("retrieval_candidates", len(results))
+            return results
 
         mode = str(self.rollout.get("memory_rollout_mode", "enabled")).strip().lower()
         if mode not in self.ROLLOUT_MODES:
@@ -3937,6 +4045,9 @@ class MemoryStore:
         query: str | None = None,
         retrieval_k: int = 6,
         token_budget: int = 900,
+        mode: str | None = None,
+        recency_half_life_days: float | None = None,
+        embedding_provider: str | None = None,
     ) -> str:
         intent = self._infer_retrieval_intent(query or "")
         long_term = self.read_long_term()
@@ -3945,6 +4056,8 @@ class MemoryStore:
         retrieved = self.retrieve(
             query or "",
             top_k=retrieval_k,
+            recency_half_life_days=recency_half_life_days,
+            embedding_provider=embedding_provider,
         )
 
         budget = max(token_budget, 200)
@@ -4557,6 +4670,7 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         memory_window: int = 50,
+        memory_mode: str | None = None,
         enable_contradiction_check: bool = True,
     ) -> bool:
         """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.

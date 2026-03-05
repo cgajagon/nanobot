@@ -4,7 +4,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolResult
 
 
 def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | None = None) -> Path:
@@ -23,6 +23,8 @@ def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | 
 
 class ReadFileTool(Tool):
     """Tool to read file contents."""
+
+    readonly = True
 
     def __init__(self, workspace: Path | None = None, allowed_dir: Path | None = None):
         self._workspace = workspace
@@ -49,24 +51,26 @@ class ReadFileTool(Tool):
             "required": ["path"]
         }
     
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, **kwargs: Any) -> ToolResult:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return ToolResult.fail(f"Error: File not found: {path}")
             if not file_path.is_file():
-                return f"Error: Not a file: {path}"
+                return ToolResult.fail(f"Error: Not a file: {path}")
 
             content = file_path.read_text(encoding="utf-8")
-            return content
+            return ToolResult.ok(content)
         except PermissionError as e:
-            return f"Error: {e}"
+            return ToolResult.fail(f"Error: {e}")
         except Exception as e:
-            return f"Error reading file: {str(e)}"
+            return ToolResult.fail(f"Error reading file: {str(e)}")
 
 
 class WriteFileTool(Tool):
     """Tool to write content to a file."""
+
+    readonly = False
 
     def __init__(self, workspace: Path | None = None, allowed_dir: Path | None = None):
         self._workspace = workspace
@@ -97,20 +101,22 @@ class WriteFileTool(Tool):
             "required": ["path", "content"]
         }
     
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, content: str, **kwargs: Any) -> ToolResult:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return f"Successfully wrote {len(content)} bytes to {file_path}"
+            return ToolResult.ok(f"Successfully wrote {len(content)} bytes to {file_path}")
         except PermissionError as e:
-            return f"Error: {e}"
+            return ToolResult.fail(f"Error: {e}")
         except Exception as e:
-            return f"Error writing file: {str(e)}"
+            return ToolResult.fail(f"Error writing file: {str(e)}")
 
 
 class EditFileTool(Tool):
     """Tool to edit a file by replacing text."""
+
+    readonly = False
 
     def __init__(self, workspace: Path | None = None, allowed_dir: Path | None = None):
         self._workspace = workspace
@@ -145,30 +151,30 @@ class EditFileTool(Tool):
             "required": ["path", "old_text", "new_text"]
         }
     
-    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> ToolResult:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not file_path.exists():
-                return f"Error: File not found: {path}"
+                return ToolResult.fail(f"Error: File not found: {path}")
 
             content = file_path.read_text(encoding="utf-8")
 
             if old_text not in content:
-                return self._not_found_message(old_text, content, path)
+                return ToolResult.fail(self._not_found_message(old_text, content, path))
 
             # Count occurrences
             count = content.count(old_text)
             if count > 1:
-                return f"Warning: old_text appears {count} times. Please provide more context to make it unique."
+                return ToolResult.fail(f"Warning: old_text appears {count} times. Please provide more context to make it unique.")
 
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
 
-            return f"Successfully edited {file_path}"
+            return ToolResult.ok(f"Successfully edited {file_path}")
         except PermissionError as e:
-            return f"Error: {e}"
+            return ToolResult.fail(f"Error: {e}")
         except Exception as e:
-            return f"Error editing file: {str(e)}"
+            return ToolResult.fail(f"Error editing file: {str(e)}")
 
     @staticmethod
     def _not_found_message(old_text: str, content: str, path: str) -> str:
@@ -196,6 +202,8 @@ class EditFileTool(Tool):
 class ListDirTool(Tool):
     """Tool to list directory contents."""
 
+    readonly = True
+
     def __init__(self, workspace: Path | None = None, allowed_dir: Path | None = None):
         self._workspace = workspace
         self._allowed_dir = allowed_dir
@@ -221,13 +229,13 @@ class ListDirTool(Tool):
             "required": ["path"]
         }
     
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, **kwargs: Any) -> ToolResult:
         try:
             dir_path = _resolve_path(path, self._workspace, self._allowed_dir)
             if not dir_path.exists():
-                return f"Error: Directory not found: {path}"
+                return ToolResult.fail(f"Error: Directory not found: {path}")
             if not dir_path.is_dir():
-                return f"Error: Not a directory: {path}"
+                return ToolResult.fail(f"Error: Not a directory: {path}")
 
             items = []
             for item in sorted(dir_path.iterdir()):
@@ -235,10 +243,10 @@ class ListDirTool(Tool):
                 items.append(f"{prefix}{item.name}")
 
             if not items:
-                return f"Directory {path} is empty"
+                return ToolResult.ok(f"Directory {path} is empty")
 
-            return "\n".join(items)
+            return ToolResult.ok("\n".join(items))
         except PermissionError as e:
-            return f"Error: {e}"
+            return ToolResult.fail(f"Error: {e}")
         except Exception as e:
-            return f"Error listing directory: {str(e)}"
+            return ToolResult.fail(f"Error listing directory: {str(e)}")

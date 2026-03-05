@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from nanobot.agent.context import ContextBuilder
+from nanobot.agent.context import ContextBuilder, compress_context, estimate_messages_tokens
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.base import ToolResult
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
@@ -79,6 +80,7 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        context_window_tokens: int = 128_000,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -89,6 +91,7 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.context_window_tokens = context_window_tokens
         self.memory_window = memory_window
         self.memory_retrieval_k = memory_retrieval_k
         self.memory_token_budget = memory_token_budget
@@ -228,133 +231,114 @@ class AgentLoop:
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
 
-    @staticmethod
-    def _classify_action_intent(text: str) -> tuple[str, str]:
+    # ------------------------------------------------------------------
+    # Parallel tool execution
+    # ------------------------------------------------------------------
+
+    async def _execute_tools_parallel(
+        self,
+        tool_calls: list,
+    ) -> list[ToolResult]:
+        """Execute tool calls, running read-only tools concurrently.
+
+        Write-capable tool calls are executed sequentially to preserve
+        ordering semantics.  Read-only tools that appear *between* writes
+        are batched and awaited together.
         """
-        Classify message into coarse intent classes and domain.
+        results: list[ToolResult] = [ToolResult.ok("")] * len(tool_calls)
 
-        Returns:
-            (intent_class, domain)
-            intent_class: informational | state-read | state-write
-            domain: email | filesystem | web | system | generic
-        """
-        content = (text or "").strip().lower()
-        if not content:
-            return "informational", "generic"
+        # Partition into sequential groups: consecutive readonly calls
+        # form a parallel batch; everything else is sequential.
+        i = 0
+        while i < len(tool_calls):
+            tc = tool_calls[i]
+            tool_obj = self.tools.get(tc.name)
+            is_readonly = tool_obj.readonly if tool_obj else False
 
-        domain = "generic"
-        if re.search(r"\b(email(s)?|inbox(es)?|unread|gmail|imap|smtp)\b", content):
-            domain = "email"
-        elif re.search(r"\b(file(s)?|folder(s)?|directory(ies)?|path(s)?|workspace)\b", content):
-            domain = "filesystem"
-        elif re.search(r"\b(web|website(s)?|url(s)?|internet|online)\b", content):
-            domain = "web"
-        elif re.search(r"\b(log(s)?|process(es)?|service(s)?|system|status|health)\b", content):
-            domain = "system"
+            if is_readonly:
+                # Collect consecutive readonly calls
+                batch_start = i
+                while i < len(tool_calls):
+                    t = self.tools.get(tool_calls[i].name)
+                    if t and t.readonly:
+                        i += 1
+                    else:
+                        break
+                batch = tool_calls[batch_start:i]
+                coros = [self.tools.execute(t.name, t.arguments) for t in batch]
+                batch_results = await asyncio.gather(*coros, return_exceptions=True)
+                for j, br in enumerate(batch_results):
+                    if isinstance(br, BaseException):
+                        results[batch_start + j] = ToolResult.fail(f"Error: {br}")
+                    else:
+                        results[batch_start + j] = br
+            else:
+                results[i] = await self.tools.execute(tc.name, tc.arguments)
+                i += 1
 
-        write_pattern = (
-            r"\b(send|write|edit|delete|update|create|run|execute|schedule|set|start|stop|restart|apply)\b"
-        )
-        read_pattern = (
-            r"\b(check|list|show|fetch|find|search|read|inspect|monitor|get|summarize)\b"
-        )
-        external_state_pattern = (
-            r"\b(inbox(es)?|unread|email(s)?|gmail|imap|smtp|file(s)?|folder(s)?|directory(ies)?|path(s)?|"
-            r"log(s)?|status|service(s)?|process(es)?|url(s)?|website(s)?)\b"
-        )
+        return results
 
-        if re.search(write_pattern, content):
-            return "state-write", domain
-        if re.search(read_pattern, content) and (domain != "generic" or re.search(external_state_pattern, content)):
-            return "state-read", domain
-        return "informational", domain
+    # ------------------------------------------------------------------
+    # Agent loop (Plan → Act → Observe → Reflect)
+    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _should_require_tool_evidence(intent_class: str, domain: str) -> bool:
-        if intent_class == "state-write":
-            return True
-        if intent_class == "state-read" and domain != "generic":
-            return True
-        return False
-
-    @staticmethod
-    def _tool_requirement_nudge(intent_class: str, domain: str) -> str:
-        tool_hints = {
-            "email": "Prefer tools that actually fetch/send email state for this chat.",
-            "filesystem": "Prefer filesystem tools (read_file/list_dir/exec) for concrete evidence.",
-            "web": "Prefer web_search/web_fetch for concrete evidence.",
-            "system": "Prefer exec/log inspection tools for concrete evidence.",
-        }
-        domain_hint = tool_hints.get(domain, "Use at least one appropriate tool before finalizing.")
-        return (
-            "For this turn, you must execute at least one tool call before giving a final answer. "
-            "Do not answer from memory alone. "
-            f"{domain_hint} "
-            "If tools fail, report the concrete error output from this turn."
-        )
-
-    @staticmethod
-    def _user_requested_write(text: str) -> bool:
-        """Heuristic: user explicitly asked to create/save/export a file or script."""
-        content = (text or "").lower()
-        if not content:
-            return False
-        # Direct verbs with file-ish objects or explicit paths/extensions.
-        if re.search(
-            r"\b(create|write|save|store|export|dump|generate|make)\b.*\b(file|script|report|note|doc|document|"
-            r"markdown|md|json|csv|txt|log)\b",
-            content,
-        ):
-            return True
-        if re.search(r"\b(save|write|dump|export)\b.*\b(to|into)\b.*\b(/|~|\\w+\\.(sh|py|js|ts|md|txt|json|csv|log))\b", content):
-            return True
-        return False
-
-    @staticmethod
-    def _filter_write_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Remove write-capable tools from tool definitions."""
-        write_tools = {"write_file", "edit_file", "cron"}
-        filtered: list[dict[str, Any]] = []
-        for tool in tools:
-            name = (tool.get("function") or {}).get("name")
-            if name in write_tools:
-                continue
-            filtered.append(tool)
-        return filtered
+    _REFLECT_PROMPT = (
+        "Briefly reflect: did the tool results above achieve your goal? "
+        "If not, state what went wrong and what you will try next. "
+        "If yes, produce the final answer for the user."
+    )
 
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
-        require_tool_evidence: bool = False,
-        tool_requirement_nudge: str | None = None,
-        allow_write_tools: bool = True,
     ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+        """Run the Plan-Act-Observe-Reflect agent loop.
+
+        Returns (final_content, tools_used, messages).
+        """
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
         turn_tool_calls = 0
-        nudged_for_tools = False
         nudged_for_final = False
-        disable_tools_next = False
+        consecutive_errors = 0
+
+        # Reserve ~20% of context window for the model's response
+        context_budget = int(self.context_window_tokens * 0.80)
 
         while iteration < self.max_iterations:
             iteration += 1
 
-            tools_def = None if disable_tools_next else self.tools.get_definitions()
-            if tools_def is not None and not allow_write_tools:
-                tools_def = self._filter_write_tools(tools_def)
-            disable_tools_next = False
+            # --- Context compression: keep messages within budget ----------
+            messages = compress_context(messages, context_budget)
+
+            tools_def = self.tools.get_definitions()
             response = await self.provider.chat(
                 messages=messages,
-                tools=tools_def,
+                tools=tools_def if not nudged_for_final else None,
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
             )
 
+            # --- Check for LLM-level errors --------------------------------
+            if response.finish_reason == "error":
+                consecutive_errors += 1
+                logger.warning("LLM returned error (attempt {}): {}", consecutive_errors, response.content)
+                if consecutive_errors >= 3:
+                    final_content = (
+                        "I'm having trouble reaching the language model right now. "
+                        "Please try again in a moment."
+                    )
+                    messages = self.context.add_assistant_message(messages, final_content)
+                    break
+                await asyncio.sleep(min(2 ** consecutive_errors, 10))
+                continue
+            consecutive_errors = 0
+
+            # --- ACT: execute tool calls -----------------------------------
             if response.has_tool_calls:
                 if on_progress:
                     clean = self._strip_think(response.content)
@@ -380,35 +364,34 @@ class AgentLoop:
                     reasoning_content=reasoning,
                 )
 
-                for tool_call in response.tool_calls:
+                # Execute tools (parallel for readonly, sequential for writes)
+                tool_results = await self._execute_tools_parallel(response.tool_calls)
+
+                any_failed = False
+                for tool_call, result in zip(response.tool_calls, tool_results):
                     turn_tool_calls += 1
                     tools_used.append(tool_call.name)
-                    # Normalize common arg mistakes (model frequently uses "cmd" for exec).
-                    if tool_call.name == "exec" and isinstance(tool_call.arguments, dict):
-                        if "command" not in tool_call.arguments and "cmd" in tool_call.arguments:
-                            tool_call.arguments["command"] = tool_call.arguments.pop("cmd")
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    status = "OK" if result.success else "FAIL"
+                    logger.info("Tool {}: {}({})", status, tool_call.name, args_str[:200])
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                        messages, tool_call.id, tool_call.name, result.to_llm_string()
                     )
+                    if not result.success:
+                        any_failed = True
+
+                # --- REFLECT: after tool execution, nudge the model to
+                # evaluate results (only when there were failures or many calls)
+                if any_failed or len(response.tool_calls) >= 3:
+                    messages.append({
+                        "role": "system",
+                        "content": self._REFLECT_PROMPT,
+                    })
+
             else:
-                if require_tool_evidence and turn_tool_calls == 0 and not nudged_for_tools:
-                    nudged_for_tools = True
-                    messages.append(
-                        {
-                            "role": "system",
-                            "content": tool_requirement_nudge or (
-                                "For this turn, call at least one tool before finalizing your answer."
-                            ),
-                        }
-                    )
-                    logger.info("Action intent required tool evidence; retrying once with tool-use nudge.")
-                    continue
-                if not final_content and turn_tool_calls > 0 and not nudged_for_final:
+                # --- No tool calls: the model is producing a text answer ---
+                if not response.content and turn_tool_calls > 0 and not nudged_for_final:
                     nudged_for_final = True
-                    disable_tools_next = True
                     messages.append(
                         {
                             "role": "system",
@@ -703,10 +686,7 @@ class AgentLoop:
                 message_tool.start_turn()
 
         history = session.get_history(max_messages=self.memory_window)
-        intent_class, intent_domain = self._classify_action_intent(msg.content)
-        require_tool_evidence = self._should_require_tool_evidence(intent_class, intent_domain)
-        allow_write_tools = (intent_class == "state-write") or self._user_requested_write(msg.content)
-        verify_before_answer = self._should_force_verification(msg.content) or require_tool_evidence
+        verify_before_answer = self._should_force_verification(msg.content)
         skill_names = self.context.skills.detect_relevant_skills(msg.content)
         initial_messages = self.context.build_messages(
             history=history,
@@ -728,20 +708,12 @@ class AgentLoop:
         final_content, tools_used, all_msgs = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
-            require_tool_evidence=require_tool_evidence,
-            tool_requirement_nudge=self._tool_requirement_nudge(intent_class, intent_domain),
-            allow_write_tools=allow_write_tools,
         )
 
         if final_content is None:
             final_content = self._build_no_answer_explanation(msg.content, all_msgs)
             # Ensure fallback responses are recorded in the session log.
             all_msgs = self.context.add_assistant_message(all_msgs, final_content)
-        elif require_tool_evidence and not tools_used:
-            final_content = (
-                "I could not complete that action because no tool execution succeeded in this turn. "
-                "Please retry, and I will return results grounded in live tool output."
-            )
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)

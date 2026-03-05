@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolResult
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -46,6 +46,7 @@ def _validate_url(url: str) -> tuple[bool, str]:
 class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
     
+    readonly = True
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
     parameters = {
@@ -66,9 +67,9 @@ class WebSearchTool(Tool):
         """Resolve API key at call time so env/config changes are picked up."""
         return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
 
-    async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
+    async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> ToolResult:
         if not self.api_key:
-            return (
+            return ToolResult.fail(
                 "Error: Brave Search API key not configured. "
                 "Set it in ~/.nanobot/config.json under tools.web.search.apiKey "
                 "(or export BRAVE_API_KEY), then restart the gateway."
@@ -87,20 +88,22 @@ class WebSearchTool(Tool):
             
             results = r.json().get("web", {}).get("results", [])
             if not results:
-                return f"No results for: {query}"
+                return ToolResult.ok(f"No results for: {query}")
             
             lines = [f"Results for: {query}\n"]
             for i, item in enumerate(results[:n], 1):
                 lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')}")
                 if desc := item.get("description"):
                     lines.append(f"   {desc}")
-            return "\n".join(lines)
+            return ToolResult.ok("\n".join(lines))
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.fail(f"Error: {e}")
 
 
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
+    
+    readonly = True
     
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
@@ -117,7 +120,7 @@ class WebFetchTool(Tool):
     def __init__(self, max_chars: int = 50000):
         self.max_chars = max_chars
     
-    async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
+    async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> ToolResult:
         from readability import Document
 
         max_chars = maxChars or self.max_chars
@@ -125,7 +128,7 @@ class WebFetchTool(Tool):
         # Validate URL before fetching
         is_valid, error_msg = _validate_url(url)
         if not is_valid:
-            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
+            return ToolResult.fail(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
         try:
             async with httpx.AsyncClient(
@@ -154,10 +157,11 @@ class WebFetchTool(Tool):
             if truncated:
                 text = text[:max_chars]
             
-            return json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
+            output = json.dumps({"url": url, "finalUrl": str(r.url), "status": r.status_code,
                               "extractor": extractor, "truncated": truncated, "length": len(text), "text": text}, ensure_ascii=False)
+            return ToolResult.ok(output, truncated=truncated)
         except Exception as e:
-            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
+            return ToolResult.fail(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
     
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""

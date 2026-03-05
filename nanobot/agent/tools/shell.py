@@ -6,11 +6,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolResult
 
 
 class ExecTool(Tool):
     """Tool to execute shell commands."""
+
+    readonly = False
     
     def __init__(
         self,
@@ -51,7 +53,7 @@ class ExecTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The shell command to execute (alias: cmd)"
                 },
                 "working_dir": {
                     "type": "string",
@@ -61,11 +63,15 @@ class ExecTool(Tool):
             "required": ["command"]
         }
     
-    async def execute(self, command: str, working_dir: str | None = None, **kwargs: Any) -> str:
+    async def execute(self, command: str | None = None, cmd: str | None = None, working_dir: str | None = None, **kwargs: Any) -> ToolResult:
+        # Accept 'cmd' as alias for 'command' (models frequently use it)
+        command = command or cmd
+        if not command:
+            return ToolResult.fail("Error: 'command' (or 'cmd') parameter is required")
         cwd = working_dir or self.working_dir or os.getcwd()
         guard_error = self._guard_command(command, cwd)
         if guard_error:
-            return guard_error
+            return ToolResult.fail(guard_error)
 
         env = os.environ.copy()
         self._inject_node_ca_bundle(env)
@@ -93,7 +99,7 @@ class ExecTool(Tool):
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except asyncio.TimeoutError:
                     pass
-                return f"Error: Command timed out after {self.timeout} seconds"
+                return ToolResult.fail(f"Error: Command timed out after {self.timeout} seconds")
             
             output_parts = []
             
@@ -112,13 +118,24 @@ class ExecTool(Tool):
             
             # Truncate very long output
             max_len = 10000
-            if len(result) > max_len:
+            was_truncated = len(result) > max_len
+            if was_truncated:
                 result = result[:max_len] + f"\n... (truncated, {len(result) - max_len} more chars)"
             
-            return result
+            is_success = process.returncode == 0
+            if is_success:
+                return ToolResult.ok(result, truncated=was_truncated)
+            else:
+                return ToolResult(
+                    output=result,
+                    success=False,
+                    error=f"Command exited with code {process.returncode}",
+                    truncated=was_truncated,
+                    metadata={"exit_code": process.returncode},
+                )
             
         except Exception as e:
-            return f"Error executing command: {str(e)}"
+            return ToolResult.fail(f"Error executing command: {str(e)}")
 
     @staticmethod
     def _inject_node_ca_bundle(env: dict[str, str]) -> None:

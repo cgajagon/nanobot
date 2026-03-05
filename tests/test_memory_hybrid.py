@@ -93,9 +93,6 @@ class TestHybridMemoryStore:
         assert len(events) == 1
         assert events[0]["type"] == "preference"
 
-        index_file = store.index_dir / "vectors.sqlite3"
-        assert index_file.exists()
-
         profile = store.read_profile()
         assert "User prefers concise responses." in profile["preferences"]
         assert "Never use dark mode." in profile["constraints"]
@@ -149,11 +146,8 @@ class TestHybridMemoryStore:
         )
         assert len(retrieved) >= 1
         assert retrieved[0]["summary"].lower().find("oauth2") >= 0
-        assert retrieved[0]["retrieval_reason"]["provider"] == "hash"
+        assert retrieved[0]["retrieval_reason"]["provider"] == "keyword"
         assert retrieved[0]["provenance"]["canonical_id"] == retrieved[0]["id"]
-
-        index_file = store.index_dir / "vectors.sqlite3"
-        assert index_file.exists()
 
         report = store.verify_memory(stale_days=90)
         assert report["events"] == 2
@@ -544,7 +538,7 @@ class TestHybridMemoryStore:
 
         conflicts = updated.get("conflicts", [])
         assert conflicts
-        open_conflicts = [c for c in conflicts if c.get("status") == "open"]
+        open_conflicts = [c for c in conflicts if c.get("status") in ("open", "needs_user")]
         assert open_conflicts
         assert open_conflicts[0]["old"] == "dark mode"
         assert open_conflicts[0]["new"] == "light mode"
@@ -576,7 +570,7 @@ class TestHybridMemoryStore:
         assert "deployment region is us-east-1" in facts
 
         conflicts = updated.get("conflicts", [])
-        open_conflicts = [c for c in conflicts if c.get("status") == "open" and c.get("field") == "stable_facts"]
+        open_conflicts = [c for c in conflicts if c.get("status") in ("open", "needs_user") and c.get("field") == "stable_facts"]
         assert open_conflicts
         assert str(open_conflicts[0]["old"]).lower() == "deployment region is eu-west-1"
         assert str(open_conflicts[0]["new"]).lower() == "deployment region is us-east-1"
@@ -740,7 +734,8 @@ class TestHybridMemoryStore:
         ids = {str(e.get("id")) for e in events}
         assert {"nd-1", "nd-2"}.issubset(ids)
 
-    def test_sqlite_vector_backend_persists_and_retrieves(self, tmp_path: Path) -> None:
+    def test_local_keyword_retrieval_without_mem0(self, tmp_path: Path) -> None:
+        """When mem0 is unavailable, retrieve() uses local keyword matching."""
         store = MemoryStore(tmp_path, embedding_provider="hash", vector_backend="sqlite")
         store.append_events(
             [
@@ -762,29 +757,49 @@ class TestHybridMemoryStore:
 
         retrieved = store.retrieve("postgresql database", top_k=2, embedding_provider="hash")
         assert retrieved
-        assert retrieved[0]["retrieval_reason"]["backend"] == "sqlite"
-        assert (store.index_dir / "vectors.sqlite3").exists()
+        assert retrieved[0]["retrieval_reason"]["provider"] == "keyword"
+        assert retrieved[0]["retrieval_reason"]["backend"] == "jsonl"
 
-    def test_faiss_backend_falls_back_when_unavailable(self, tmp_path: Path) -> None:
+    def test_keyword_retrieval_with_recency(self, tmp_path: Path) -> None:
+        """Recency weighting should boost recent events over old ones."""
         store = MemoryStore(tmp_path, embedding_provider="hash", vector_backend="faiss")
         store.append_events(
             [
                 {
-                    "id": "faiss-fallback-1",
-                    "timestamp": "2026-02-23T00:00:00+00:00",
+                    "id": "old-ev",
+                    "timestamp": "2024-01-01T00:00:00+00:00",
                     "channel": "cli",
                     "chat_id": "direct",
                     "type": "fact",
-                    "summary": "Service region is eu-west-1.",
-                    "entities": ["region", "eu-west-1"],
+                    "summary": "Primary database runs on PostgreSQL in eu-west-1.",
+                    "entities": ["database", "postgresql", "eu-west-1"],
                     "salience": 0.7,
                     "confidence": 0.8,
                     "source_span": [2, 3],
                     "ttl_days": 365,
-                }
+                },
+                {
+                    "id": "new-ev",
+                    "timestamp": "2026-03-01T00:00:00+00:00",
+                    "channel": "cli",
+                    "chat_id": "direct",
+                    "type": "decision",
+                    "summary": "Decided to migrate the database cluster to eu-west-1.",
+                    "entities": ["migration", "database", "eu-west-1"],
+                    "salience": 0.7,
+                    "confidence": 0.8,
+                    "source_span": [4, 5],
+                    "ttl_days": 365,
+                },
             ]
         )
 
-        retrieved = store.retrieve("region eu-west-1", top_k=2, embedding_provider="hash")
-        assert retrieved
-        assert retrieved[0]["retrieval_reason"]["backend"] == "sqlite"
+        retrieved = store.retrieve(
+            "database eu-west-1",
+            top_k=2,
+            recency_half_life_days=30.0,
+            embedding_provider="hash",
+        )
+        assert len(retrieved) == 2
+        # The more recent event should rank first due to recency boost
+        assert retrieved[0]["id"] == "new-ev"

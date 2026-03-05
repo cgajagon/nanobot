@@ -1,6 +1,7 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import json
 import mimetypes
 import platform
 import time
@@ -8,8 +9,93 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+
+
+# ---------------------------------------------------------------------------
+# Token estimation
+# ---------------------------------------------------------------------------
+
+def estimate_tokens(text: str) -> int:
+    """Fast heuristic token count (~4 chars per token for English).
+
+    Accurate enough for budget decisions without pulling in tiktoken.
+    """
+    return max(1, len(text) // 4)
+
+
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    """Estimate total tokens across a message list."""
+    total = 0
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            total += estimate_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    total += estimate_tokens(part.get("text", ""))
+        # Count tool call arguments
+        for tc in m.get("tool_calls", []):
+            fn = tc.get("function", {})
+            total += estimate_tokens(fn.get("arguments", ""))
+            total += estimate_tokens(fn.get("name", ""))
+    return total
+
+
+def compress_context(
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    *,
+    preserve_recent: int = 6,
+) -> list[dict[str, Any]]:
+    """Drop or truncate old tool results to fit within *max_tokens*.
+
+    Strategy (in order):
+    1. Keep system message and the most recent *preserve_recent* messages intact.
+    2. For older tool-result messages, truncate large outputs to a summary line.
+    3. If still over budget, drop oldest tool-result messages entirely.
+
+    Returns a new list (does not mutate the input).
+    """
+    if not messages:
+        return messages
+
+    current = estimate_messages_tokens(messages)
+    if current <= max_tokens:
+        return messages
+
+    # Separate: system (index 0), middle, tail
+    system = messages[:1]
+    tail_start = max(1, len(messages) - preserve_recent)
+    middle = list(messages[1:tail_start])
+    tail = messages[tail_start:]
+
+    # Phase 1: truncate large tool results in middle
+    _SUMMARY = "(output truncated to save context – re-run tool if needed)"
+    for i, m in enumerate(middle):
+        if m.get("role") == "tool":
+            content = m.get("content", "")
+            if isinstance(content, str) and estimate_tokens(content) > 200:
+                middle[i] = {**m, "content": content[:200] + f"\n{_SUMMARY}"}
+
+    trial = system + middle + tail
+    if estimate_messages_tokens(trial) <= max_tokens:
+        return trial
+
+    # Phase 2: drop tool results from middle entirely (keep assistant + user)
+    middle = [m for m in middle if m.get("role") != "tool"]
+
+    trial = system + middle + tail
+    if estimate_messages_tokens(trial) <= max_tokens:
+        return trial
+
+    # Phase 3: drop all middle messages (extreme case)
+    logger.warning("Context compression dropped all middle messages to fit budget")
+    return system + tail
 
 
 class ContextBuilder:
@@ -191,8 +277,6 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
                 "Before answering this turn, verify the key claim(s) with available files/tools. "
                 "If results remain inconclusive, say the outcome is unclear and list what was verified."
             )
-        if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
 
         # History

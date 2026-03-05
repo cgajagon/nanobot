@@ -2,7 +2,9 @@
 
 from typing import Any
 
-from nanobot.agent.tools.base import Tool
+from loguru import logger
+
+from nanobot.agent.tools.base import Tool, ToolResult
 
 
 class ToolRegistry:
@@ -12,6 +14,8 @@ class ToolRegistry:
     Allows dynamic registration and execution of tools.
     """
     
+    _HINT = "\n\n[Analyze the error above and try a different approach.]"
+
     def __init__(self):
         self._tools: dict[str, Tool] = {}
     
@@ -35,24 +39,48 @@ class ToolRegistry:
         """Get all tool definitions in OpenAI format."""
         return [tool.to_schema() for tool in self._tools.values()]
     
-    async def execute(self, name: str, params: dict[str, Any]) -> str:
-        """Execute a tool by name with given parameters."""
-        _HINT = "\n\n[Analyze the error above and try a different approach.]"
+    async def execute(self, name: str, params: dict[str, Any]) -> ToolResult:
+        """Execute a tool by name with given parameters.
 
+        Always returns a ``ToolResult``.  Legacy tools that still return a
+        bare string are automatically wrapped.
+        """
         tool = self._tools.get(name)
         if not tool:
-            return f"Error: Tool '{name}' not found. Available: {', '.join(self.tool_names)}"
+            return ToolResult.fail(
+                f"Error: Tool '{name}' not found. Available: {', '.join(self.tool_names)}"
+            )
 
         try:
             errors = tool.validate_params(params)
             if errors:
-                return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors) + _HINT
-            result = await tool.execute(**params)
-            if isinstance(result, str) and result.startswith("Error"):
-                return result + _HINT
+                msg = f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
+                return ToolResult.fail(msg + self._HINT)
+
+            raw = await tool.execute(**params)
+
+            # Normalise into ToolResult (supports legacy str returns)
+            if isinstance(raw, ToolResult):
+                result = raw
+            elif isinstance(raw, str):
+                # Backward compat: detect old-style "Error…" strings.
+                if raw.startswith("Error"):
+                    result = ToolResult.fail(raw)
+                else:
+                    result = ToolResult.ok(raw)
+            else:
+                result = ToolResult.ok(str(raw))
+
+            # Append retry hint for failures
+            if not result.success:
+                if not result.output.endswith(self._HINT):
+                    result.output += self._HINT
+
             return result
+
         except Exception as e:
-            return f"Error executing {name}: {str(e)}" + _HINT
+            logger.opt(exception=True).debug("Tool '{}' raised", name)
+            return ToolResult.fail(f"Error executing {name}: {str(e)}" + self._HINT)
     
     @property
     def tool_names(self) -> list[str]:

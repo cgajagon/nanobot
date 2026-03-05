@@ -2,7 +2,7 @@
 
 from typing import Any, Awaitable, Callable
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool, ToolResult
 from nanobot.bus.events import OutboundMessage
 
 
@@ -81,16 +81,16 @@ class MessageTool(Tool):
         message_id: str | None = None,
         media: list[str] | None = None,
         **kwargs: Any
-    ) -> str:
+    ) -> ToolResult:
         channel = channel or self._default_channel
         chat_id = chat_id or self._default_chat_id
         message_id = message_id or self._default_message_id
 
         if not channel or not chat_id:
-            return "Error: No target channel/chat specified"
+            return ToolResult.fail("Error: No target channel/chat specified")
 
         if not self._send_callback:
-            return "Error: Message sending not configured"
+            return ToolResult.fail("Error: Message sending not configured")
 
         msg = OutboundMessage(
             channel=channel,
@@ -106,6 +106,6 @@ class MessageTool(Tool):
             await self._send_callback(msg)
             self._sent_in_turn = True
             media_info = f" with {len(media)} attachments" if media else ""
-            return f"Message sent to {channel}:{chat_id}{media_info}"
+            return ToolResult.ok(f"Message sent to {channel}:{chat_id}{media_info}")
         except Exception as e:
-            return f"Error sending message: {str(e)}"
+            return ToolResult.fail(f"Error sending message: {str(e)}")

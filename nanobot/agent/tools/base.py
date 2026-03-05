@@ -1,7 +1,44 @@
 """Base class for agent tools."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
+
+
+@dataclass(slots=True)
+class ToolResult:
+    """Structured result from a tool execution.
+
+    Tools should return a ``ToolResult`` instead of a bare string so the
+    registry and agent loop can distinguish success from failure without
+    fragile ``startswith("Error")`` checks.
+    """
+
+    output: str
+    success: bool = True
+    error: str | None = None
+    truncated: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    # ------------------------------------------------------------------
+    # Convenience constructors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def ok(cls, output: str, *, truncated: bool = False, **meta: Any) -> ToolResult:
+        """Create a successful result."""
+        return cls(output=output, success=True, truncated=truncated, metadata=meta)
+
+    @classmethod
+    def fail(cls, error: str, *, output: str = "", **meta: Any) -> ToolResult:
+        """Create a failed result."""
+        return cls(output=output or error, success=False, error=error, metadata=meta)
+
+    # Serialize for the LLM context (backward-compatible string)
+    def to_llm_string(self) -> str:
+        return self.output
 
 
 class Tool(ABC):
@@ -11,6 +48,9 @@ class Tool(ABC):
     Tools are capabilities that the agent can use to interact with
     the environment, such as reading files, executing commands, etc.
     """
+
+    # Whether this tool only reads state (used for parallel execution).
+    readonly: bool = False
     
     _TYPE_MAP = {
         "string": str,
@@ -40,7 +80,7 @@ class Tool(ABC):
         pass
     
     @abstractmethod
-    async def execute(self, **kwargs: Any) -> str:
+    async def execute(self, **kwargs: Any) -> str | ToolResult:
         """
         Execute the tool with given parameters.
         
@@ -48,7 +88,7 @@ class Tool(ABC):
             **kwargs: Tool-specific parameters.
         
         Returns:
-            String result of the tool execution.
+            String result or ToolResult of the tool execution.
         """
         pass
 
