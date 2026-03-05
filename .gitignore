@@ -20,4 +20,6 @@ poetry.lock
 .pytest_cache/
 botpy.log
 tests/__pycache__/
+.ci/
+artifacts/
 docs
