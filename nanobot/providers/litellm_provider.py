@@ -3,12 +3,12 @@
 import json
 import json_repair
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import litellm
 from litellm import acompletion
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, LLMResponse, StreamChunk, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
 
 
@@ -282,6 +282,134 @@ class LiteLLMProvider(LLMProvider):
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model
+
+    # ------------------------------------------------------------------
+    # Streaming (Step 15)
+    # ------------------------------------------------------------------
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream chat completion tokens via ``litellm.acompletion(stream=True)``."""
+        original_model = model or self.default_model
+        resolved = self._resolve_model(original_model)
+
+        if self._supports_cache_control(original_model):
+            messages, tools = self._apply_cache_control(messages, tools)
+
+        max_tokens = max(1, max_tokens)
+
+        kwargs: dict[str, Any] = {
+            "model": resolved,
+            "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        try:
+            timeout_s = float(os.getenv("NANOBOT_LLM_TIMEOUT_S", "60"))
+        except ValueError:
+            timeout_s = 60.0
+        try:
+            max_retries = int(os.getenv("NANOBOT_LLM_MAX_RETRIES", "1"))
+        except ValueError:
+            max_retries = 1
+        kwargs["timeout"] = max(1.0, timeout_s)
+        kwargs["num_retries"] = max(0, max_retries)
+
+        self._apply_model_overrides(resolved, kwargs)
+
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if self.extra_headers:
+            kwargs["extra_headers"] = self.extra_headers
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        try:
+            response = await acompletion(**kwargs)
+
+            # Accumulators for tool-call fragments
+            tc_fragments: dict[int, dict[str, Any]] = {}
+
+            async for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is None:
+                    continue
+
+                content_delta = getattr(delta, "content", None)
+                reasoning_delta = getattr(delta, "reasoning_content", None)
+                finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+
+                # Accumulate tool-call deltas
+                if hasattr(delta, "tool_calls") and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index if hasattr(tc_delta, "index") else 0
+                        if idx not in tc_fragments:
+                            tc_fragments[idx] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        frag = tc_fragments[idx]
+                        if hasattr(tc_delta, "id") and tc_delta.id:
+                            frag["id"] += tc_delta.id
+                        if hasattr(tc_delta, "function") and tc_delta.function:
+                            if tc_delta.function.name:
+                                frag["name"] += tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                frag["arguments"] += tc_delta.function.arguments
+
+                # Parse usage from the final chunk if present
+                usage: dict[str, int] = {}
+                raw_usage = getattr(chunk, "usage", None)
+                if raw_usage and hasattr(raw_usage, "total_tokens"):
+                    usage = {
+                        "prompt_tokens": getattr(raw_usage, "prompt_tokens", 0) or 0,
+                        "completion_tokens": getattr(raw_usage, "completion_tokens", 0) or 0,
+                        "total_tokens": getattr(raw_usage, "total_tokens", 0) or 0,
+                    }
+
+                done = finish_reason is not None
+
+                # Build tool calls on the final chunk
+                tool_calls: list[ToolCallRequest] = []
+                if done and tc_fragments:
+                    for _idx in sorted(tc_fragments):
+                        frag = tc_fragments[_idx]
+                        try:
+                            args = json_repair.loads(frag["arguments"])
+                        except Exception:
+                            args = {}
+                        tool_calls.append(ToolCallRequest(
+                            id=frag["id"],
+                            name=frag["name"],
+                            arguments=args if isinstance(args, dict) else {},
+                        ))
+
+                yield StreamChunk(
+                    content_delta=content_delta,
+                    reasoning_delta=reasoning_delta,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                    tool_calls=tool_calls,
+                    done=done,
+                )
+
+        except Exception as e:
+            yield StreamChunk(
+                content_delta=f"Error calling LLM: {e}",
+                finish_reason="error",
+                done=True,
+            )
 
     async def aclose(self) -> None:
         """Close cached async clients used by LiteLLM."""

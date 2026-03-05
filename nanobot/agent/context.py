@@ -14,6 +14,7 @@ from loguru import logger
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.agent.tools.feedback import feedback_summary
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +308,12 @@ class ContextBuilder:
         )
         if memory:
             parts.append(f"# Memory\n\n{memory}")
+
+        # Feedback summary — surface correction stats so the agent adapts
+        events_file = self.memory.persistence.events_file
+        fb_summary = feedback_summary(events_file)
+        if fb_summary:
+            parts.append(f"# Feedback\n\n{fb_summary}")
         
         # Skills - progressive loading
         # 1. Active skills: always-loaded + requested/matched for this turn
@@ -365,7 +372,12 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
 
 ## Memory
 - Remember important facts: write to {workspace_path}/memory/MEMORY.md
-- Recall past events: grep {workspace_path}/memory/HISTORY.md"""
+- Recall past events: grep {workspace_path}/memory/HISTORY.md
+
+## Feedback & Corrections
+- If the user corrects you or expresses dissatisfaction, use the `feedback` tool to record it (rating='negative' + their correction as comment).
+- If the user praises an answer or reacts positively, use the `feedback` tool with rating='positive'.
+- Learn from past corrections listed in the Feedback section of this prompt."""
 
     @staticmethod
     def _inject_runtime_context(

@@ -1723,6 +1723,67 @@ def memory_outdated(
     console.print(f"[green]✓[/green] Marked memory item as outdated in '{field}'")
 
 
+@app.command("replay-deadletters")
+def replay_deadletters(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview what would be replayed without sending."),
+):
+    """Replay undelivered outbound messages from the dead-letter file."""
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    workspace = config.workspace_path
+    dead_letter_path = workspace / "outbound_failed.jsonl"
+
+    if not dead_letter_path.exists():
+        console.print("[dim]No dead-letter file found — nothing to replay.[/dim]")
+        raise typer.Exit(0)
+
+    import json
+    lines = [l.strip() for l in dead_letter_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    if not lines:
+        console.print("[dim]Dead-letter file is empty — nothing to replay.[/dim]")
+        raise typer.Exit(0)
+
+    console.print(f"Found [bold]{len(lines)}[/bold] dead-letter message(s) in {dead_letter_path}\n")
+
+    if dry_run:
+        for i, line in enumerate(lines, 1):
+            try:
+                entry = json.loads(line)
+                channel = entry.get("channel", "?")
+                chat_id = entry.get("chat_id", "?")
+                content_preview = (entry.get("content", ""))[:80]
+                error = entry.get("error", "")
+                console.print(f"  {i}. [{channel}:{chat_id}] {content_preview}")
+                if error:
+                    console.print(f"     [dim]error: {error}[/dim]")
+            except json.JSONDecodeError:
+                console.print(f"  {i}. [red]invalid JSON line[/red]")
+        console.print(f"\n[dim]Dry run — no messages sent. Use without --dry-run to replay.[/dim]")
+        raise typer.Exit(0)
+
+    # Real replay requires starting channels
+    from nanobot.bus.queue import MessageBus
+
+    bus = MessageBus()
+    from nanobot.channels.manager import ChannelManager
+
+    manager = ChannelManager(config, bus)
+    if not manager.channels:
+        console.print("[red]No channels available for replay.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Channels: {', '.join(manager.enabled_channels)}")
+
+    async def _run():
+        return await manager.replay_dead_letters(dry_run=False)
+
+    total, ok, fail = asyncio.run(_run())
+    console.print(f"\nReplay complete: [green]{ok} sent[/green], [red]{fail} failed[/red] (of {total})")
+    if fail:
+        console.print(f"[dim]Failed messages remain in {dead_letter_path}[/dim]")
+
+
 @app.command()
 def status():
     """Show nanobot status."""

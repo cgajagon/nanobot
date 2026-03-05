@@ -172,7 +172,16 @@ class ChannelManager:
         if not self.channels:
             logger.warning("No channels enabled")
             return
-        
+
+        # Auto-replay dead letters on startup (Step 16)
+        if self._dead_letter_file.exists():
+            try:
+                total, ok, fail = await self.replay_dead_letters()
+                if total:
+                    logger.info("Dead-letter replay: {} sent, {} still failed (of {})", ok, fail, total)
+            except Exception:
+                logger.exception("Dead-letter auto-replay failed")
+
         # Start outbound dispatcher
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
         
@@ -275,3 +284,77 @@ class ChannelManager:
     def enabled_channels(self) -> list[str]:
         """Get list of enabled channel names."""
         return list(self.channels.keys())
+
+    # ------------------------------------------------------------------
+    # Dead-letter replay (Step 16)
+    # ------------------------------------------------------------------
+
+    def _read_dead_letters(self) -> list[dict[str, Any]]:
+        """Read all entries from the dead-letter file."""
+        path = self._dead_letter_file
+        if not path.exists():
+            return []
+        items: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return items
+
+    async def replay_dead_letters(self, *, dry_run: bool = False) -> tuple[int, int, int]:
+        """Replay undelivered outbound messages.
+
+        Returns ``(total, succeeded, failed)`` counts.
+        """
+        entries = self._read_dead_letters()
+        if not entries:
+            return (0, 0, 0)
+
+        succeeded = 0
+        failed_entries: list[dict[str, Any]] = []
+
+        for entry in entries:
+            channel_name = entry.get("channel", "")
+            channel = self.channels.get(channel_name)
+            if channel is None:
+                logger.warning("Replay skip: channel '{}' not available", channel_name)
+                failed_entries.append(entry)
+                continue
+
+            msg = OutboundMessage(
+                channel=channel_name,
+                chat_id=entry.get("chat_id", ""),
+                content=entry.get("content", ""),
+                media=entry.get("media", []),
+                metadata=entry.get("metadata", {}),
+            )
+
+            if dry_run:
+                logger.info("Dry-run replay → {}:{} ({} chars)",
+                            channel_name, msg.chat_id, len(msg.content))
+                succeeded += 1
+                continue
+
+            try:
+                await channel.send(msg)
+                succeeded += 1
+                logger.info("Replayed message to {}:{}", channel_name, msg.chat_id)
+            except Exception as exc:
+                logger.error("Replay failed for {}:{}: {}", channel_name, msg.chat_id, exc)
+                failed_entries.append(entry)
+
+        # Rewrite the dead-letter file with only the still-failed entries
+        if not dry_run:
+            if failed_entries:
+                with open(self._dead_letter_file, "w", encoding="utf-8") as f:
+                    for e in failed_entries:
+                        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+            elif self._dead_letter_file.exists():
+                self._dead_letter_file.unlink()
+
+        total = len(entries)
+        return (total, succeeded, total - succeeded)

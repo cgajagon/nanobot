@@ -1,0 +1,286 @@
+"""LLM + heuristic extraction of structured memory events."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
+
+from .constants import _SAVE_EVENTS_TOOL
+
+if TYPE_CHECKING:
+    from nanobot.providers.base import LLMProvider
+
+
+class MemoryExtractor:
+    """LLM + heuristic extraction component extracted from MemoryStore."""
+
+    def __init__(
+        self,
+        *,
+        to_str_list: Any,
+        coerce_event: Any,
+        utc_now_iso: Any,
+    ):
+        self.to_str_list = to_str_list
+        self.coerce_event = coerce_event
+        self.utc_now_iso = utc_now_iso
+
+    @staticmethod
+    def default_profile_updates() -> dict[str, list[str]]:
+        return {
+            "preferences": [],
+            "stable_facts": [],
+            "active_projects": [],
+            "relationships": [],
+            "constraints": [],
+        }
+
+    @staticmethod
+    def parse_tool_args(args: Any) -> dict[str, Any] | None:
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                return None
+        return args if isinstance(args, dict) else None
+
+    @staticmethod
+    def count_user_corrections(messages: list[dict[str, Any]]) -> int:
+        correction_patterns = (
+            "that's wrong",
+            "that is wrong",
+            "you are wrong",
+            "incorrect",
+            "actually",
+            "correction",
+            "update that",
+            "not true",
+            "let me correct",
+            "i meant",
+        )
+        count = 0
+        for message in messages:
+            if str(message.get("role", "")).lower() != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            lowered = content.lower()
+            if any(pattern in lowered for pattern in correction_patterns):
+                count += 1
+        return count
+
+    @staticmethod
+    def _clean_phrase(value: str) -> str:
+        cleaned = re.sub(r"\s+", " ", value.strip().strip(".,;:!?\"'()[]{}"))
+        cleaned = re.sub(r"^(?:the|a|an)\s+", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    def extract_explicit_preference_corrections(self, content: str) -> list[tuple[str, str]]:
+        text = str(content or "").strip()
+        if not text:
+            return []
+
+        matches: list[tuple[str, str]] = []
+        patterns = (
+            (
+                r"(?:correction\s*[:,-]?\s*)?(?:i\s+(?:now\s+)?)?(?:prefer|want|use)\s+(.+?)\s*(?:,|;|\s+but)?\s*not\s+(.+?)(?:[.!?]|$)",
+                "new_old",
+            ),
+            (
+                r"(?:correction\s*[:,-]?\s*)?(?:not\s+)(.+?)\s*(?:,|;|\s+but)\s*(?:i\s+(?:now\s+)?)?(?:prefer|want|use)\s+(.+?)(?:[.!?]|$)",
+                "old_new",
+            ),
+        )
+
+        for pattern, order in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                if order == "new_old":
+                    new_value = self._clean_phrase(match.group(1))
+                    old_value = self._clean_phrase(match.group(2))
+                else:
+                    old_value = self._clean_phrase(match.group(1))
+                    new_value = self._clean_phrase(match.group(2))
+                if not new_value or not old_value:
+                    continue
+                if self._clean_phrase(new_value).lower() == self._clean_phrase(old_value).lower():
+                    continue
+                matches.append((new_value, old_value))
+
+        dedup: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for new_value, old_value in matches:
+            key = (new_value.lower(), old_value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append((new_value, old_value))
+        return dedup
+
+    def extract_explicit_fact_corrections(self, content: str) -> list[tuple[str, str]]:
+        text = str(content or "").strip()
+        if not text:
+            return []
+
+        matches: list[tuple[str, str]] = []
+        patterns = (
+            r"(?:correction\s*[:,-]?\s*)?(?:actually\s+)?([a-zA-Z0-9_\- ]{2,80}?)\s+is\s+(.+?)\s*(?:,|;|\s+but)?\s*not\s+(.+?)(?:[.!?]|$)",
+            r"(?:correction\s*[:,-]?\s*)?(?:actually\s+)?([a-zA-Z0-9_\- ]{2,80}?)\s+is\s+not\s+(.+?)\s*(?:,|;|\s+but)\s*(?:it(?:'s| is)|is)\s+(.+?)(?:[.!?]|$)",
+        )
+
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                subject = self._clean_phrase(match.group(1))
+                if "prefer" in subject.lower() or "want" in subject.lower() or "use" in subject.lower():
+                    continue
+
+                if "is not" in pattern:
+                    old_value = self._clean_phrase(match.group(2))
+                    new_value = self._clean_phrase(match.group(3))
+                else:
+                    new_value = self._clean_phrase(match.group(2))
+                    old_value = self._clean_phrase(match.group(3))
+
+                if not subject or not new_value or not old_value:
+                    continue
+
+                new_fact = f"{subject} is {new_value}"
+                old_fact = f"{subject} is {old_value}"
+                if self._clean_phrase(new_fact).lower() == self._clean_phrase(old_fact).lower():
+                    continue
+                matches.append((new_fact, old_fact))
+
+        dedup: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for new_value, old_value in matches:
+            key = (new_value.lower(), old_value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            dedup.append((new_value, old_value))
+        return dedup
+
+    def heuristic_extract_events(
+        self,
+        old_messages: list[dict[str, Any]],
+        *,
+        source_start: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+        updates = self.default_profile_updates()
+        events: list[dict[str, Any]] = []
+
+        type_hints = [
+            ("preference", ("prefer", "i like", "i dislike", "my preference")),
+            ("constraint", ("must", "cannot", "can't", "do not", "never")),
+            ("decision", ("decided", "we will", "let's", "plan is")),
+            ("task", ("todo", "next step", "please", "need to")),
+            ("relationship", ("is my", "works with", "project lead", "manager")),
+        ]
+
+        for offset, message in enumerate(old_messages):
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if message.get("role") != "user":
+                continue
+            text = content.strip()
+            lowered = text.lower()
+
+            event_type = "fact"
+            for candidate, needles in type_hints:
+                if any(needle in lowered for needle in needles):
+                    event_type = candidate
+                    break
+
+            summary = text if len(text) <= 220 else text[:217] + "..."
+            source_span = [source_start + offset, source_start + offset]
+            event = self.coerce_event(
+                {
+                    "timestamp": message.get("timestamp") or self.utc_now_iso(),
+                    "type": event_type,
+                    "summary": summary,
+                    "entities": [],
+                    "salience": 0.55,
+                    "confidence": 0.6,
+                },
+                source_span=source_span,
+            )
+            if event:
+                events.append(event)
+
+            if event_type == "preference":
+                updates["preferences"].append(summary)
+            elif event_type == "constraint":
+                updates["constraints"].append(summary)
+            elif event_type == "relationship":
+                updates["relationships"].append(summary)
+            else:
+                updates["stable_facts"].append(summary)
+
+        for key in updates:
+            updates[key] = list(dict.fromkeys(updates[key]))
+        return events[:20], updates
+
+    async def extract_structured_memory(
+        self,
+        provider: LLMProvider,
+        model: str,
+        current_profile: dict[str, Any],
+        lines: list[str],
+        old_messages: list[dict[str, Any]],
+        *,
+        source_start: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+        prompt = (
+            "Extract structured memory from this conversation and call save_events. "
+            "Only include actionable long-term information.\n\n"
+            "## Current Profile\n"
+            f"{json.dumps(current_profile, ensure_ascii=False)}\n\n"
+            "## Conversation\n"
+            f"{chr(10).join(lines)}"
+        )
+        try:
+            response = await provider.chat(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a structured memory extractor. Call save_events with events and profile_updates.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                tools=_SAVE_EVENTS_TOOL,
+                model=model,
+            )
+            if response.has_tool_calls:
+                args = self.parse_tool_args(response.tool_calls[0].arguments)
+                if args:
+                    raw_events = args.get("events") if isinstance(args.get("events"), list) else []
+                    raw_updates = args.get("profile_updates") if isinstance(args.get("profile_updates"), dict) else {}
+                    updates = self.default_profile_updates()
+                    for key in updates:
+                        updates[key] = self.to_str_list(raw_updates.get(key))
+
+                    events: list[dict[str, Any]] = []
+                    for _, item in enumerate(raw_events):
+                        if not isinstance(item, dict):
+                            continue
+                        source_span = item.get("source_span")
+                        if (
+                            not isinstance(source_span, list)
+                            or len(source_span) != 2
+                            or not all(isinstance(x, int) for x in source_span)
+                        ):
+                            source_span = [source_start, source_start + max(len(old_messages) - 1, 0)]
+                        event = self.coerce_event(item, source_span=source_span)
+                        if event:
+                            events.append(event)
+                        if len(events) >= 40:
+                            break
+                    return events, updates
+        except Exception:
+            logger.exception("Structured event extraction failed, falling back to heuristic extraction")
+
+        return self.heuristic_extract_events(old_messages, source_start=source_start)

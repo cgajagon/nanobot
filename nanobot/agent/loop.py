@@ -22,15 +22,16 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.base import ToolResult
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.feedback import FeedbackTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
-from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage, ReactionEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentConfig
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, LLMResponse, StreamChunk
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -149,8 +150,15 @@ class AgentLoop:
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(FeedbackTool(
+            events_file=self.workspace / "memory" / "events.jsonl",
+        ))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Skill-provided custom tools (Step 14)
+        for tool in self.context.skills.discover_tools():
+            self.tools.register(tool)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -187,6 +195,13 @@ class AgentLoop:
         if cron_tool := self.tools.get("cron"):
             if isinstance(cron_tool, CronTool):
                 cron_tool.set_context(channel, chat_id)
+
+        if feedback_tool := self.tools.get("feedback"):
+            if isinstance(feedback_tool, FeedbackTool):
+                feedback_tool.set_context(
+                    channel, chat_id,
+                    session_key=f"{channel}:{chat_id}",
+                )
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -261,6 +276,87 @@ class AgentLoop:
                 i += 1
 
         return results
+
+    # ------------------------------------------------------------------
+    # LLM call with optional streaming (Step 15)
+    # ------------------------------------------------------------------
+
+    _STREAM_FLUSH_INTERVAL = 12  # flush partial content every N chunks
+
+    async def _call_llm(
+        self,
+        messages: list[dict],
+        tools: list[dict[str, Any]] | None,
+        on_progress: Callable[..., Awaitable[None]] | None,
+    ) -> LLMResponse:
+        """Call the LLM, streaming when *on_progress* is available.
+
+        When streaming, partial content is periodically forwarded to
+        *on_progress* so that channels supporting message editing can
+        show tokens incrementally.  The final :class:`LLMResponse` is
+        assembled from the accumulated chunks.
+        """
+        # Fall back to non-streaming when there's no progress callback
+        if on_progress is None:
+            return await self.provider.chat(
+                messages=messages,
+                tools=tools,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls = []
+        finish_reason = "stop"
+        usage: dict[str, int] = {}
+        chunk_count = 0
+        last_flushed = 0
+
+        async for chunk in self.provider.stream_chat(
+            messages=messages,
+            tools=tools,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        ):
+            if chunk.content_delta:
+                content_parts.append(chunk.content_delta)
+            if chunk.reasoning_delta:
+                reasoning_parts.append(chunk.reasoning_delta)
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
+            if chunk.usage:
+                usage = chunk.usage
+            if chunk.tool_calls:
+                tool_calls = chunk.tool_calls
+
+            chunk_count += 1
+
+            # Periodically flush accumulated content to the channel
+            chars_since = sum(len(p) for p in content_parts[last_flushed:])
+            if (
+                chars_since >= 80
+                and chunk_count % self._STREAM_FLUSH_INTERVAL == 0
+                and not chunk.done
+            ):
+                partial = "".join(content_parts)
+                clean = self._strip_think(partial)
+                if clean:
+                    await on_progress(clean, streaming=True)
+                last_flushed = len(content_parts)
+
+        full_content = "".join(content_parts) or None
+        full_reasoning = "".join(reasoning_parts) or None
+
+        return LLMResponse(
+            content=full_content,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+            reasoning_content=full_reasoning,
+        )
 
     # ------------------------------------------------------------------
     # Agent loop (Plan → Act → Observe → Reflect)
@@ -374,12 +470,11 @@ class AgentLoop:
             )
 
             tools_def = self.tools.get_definitions()
-            response = await self.provider.chat(
-                messages=messages,
-                tools=tools_def if not nudged_for_final else None,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
+            active_tools = tools_def if not nudged_for_final else None
+
+            # --- LLM call (streaming when a progress callback exists) ------
+            response = await self._call_llm(
+                messages, active_tools, on_progress,
             )
 
             # --- Check for LLM-level errors --------------------------------
@@ -598,6 +693,42 @@ class AgentLoop:
         except Exception:
             logger.debug("Verification call failed, returning original answer")
             return candidate, messages
+
+    # ------------------------------------------------------------------
+    # Reaction handling (Step 8 — Feedback loop)
+    # ------------------------------------------------------------------
+
+    async def handle_reaction(self, reaction: ReactionEvent) -> None:
+        """Translate an emoji reaction from a channel into a feedback event.
+
+        Channels can call this when a user adds a reaction to a bot message.
+        The reaction is mapped to positive/negative and persisted via the
+        feedback tool.
+        """
+        rating = reaction.rating
+        if rating is None:
+            logger.debug("Ignoring unmapped reaction emoji: {}", reaction.emoji)
+            return
+
+        feedback_tool = self.tools.get("feedback")
+        if not isinstance(feedback_tool, FeedbackTool):
+            return
+
+        feedback_tool.set_context(
+            reaction.channel,
+            reaction.chat_id,
+            session_key=f"{reaction.channel}:{reaction.chat_id}",
+        )
+        result = await feedback_tool.execute(
+            rating=rating,
+            comment=f"emoji reaction: {reaction.emoji}",
+            topic="",
+        )
+        logger.info(
+            "Reaction {} from {}:{} → {}",
+            reaction.emoji, reaction.channel, reaction.sender_id,
+            "ok" if result.success else result.error,
+        )
 
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -874,10 +1005,11 @@ class AgentLoop:
             verify_before_answer=verify_before_answer,
         )
 
-        async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
+        async def _bus_progress(content: str, *, tool_hint: bool = False, streaming: bool = False) -> None:
             meta = dict(msg.metadata or {})
             meta["_progress"] = True
             meta["_tool_hint"] = tool_hint
+            meta["_streaming"] = streaming
             await self.bus.publish_outbound(OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))

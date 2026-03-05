@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 
 @dataclass
@@ -26,6 +26,20 @@ class LLMResponse:
     def has_tool_calls(self) -> bool:
         """Check if response contains tool calls."""
         return len(self.tool_calls) > 0
+
+
+@dataclass(slots=True)
+class StreamChunk:
+    """A single incremental chunk from a streaming LLM response."""
+
+    content_delta: str | None = None
+    reasoning_delta: str | None = None
+    finish_reason: str | None = None
+    usage: dict[str, int] = field(default_factory=dict)
+    # Tool calls are accumulated by the provider and only emitted on the
+    # final chunk (done=True) when they are fully formed.
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    done: bool = False
 
 
 class LLMProvider(ABC):
@@ -108,6 +122,32 @@ class LLMProvider(ABC):
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass
+
+    async def stream_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream a chat completion response.
+
+        Default implementation falls back to non-streaming :meth:`chat` and
+        yields a single chunk.  Subclasses can override for true streaming.
+        """
+        response = await self.chat(
+            messages=messages, tools=tools, model=model,
+            max_tokens=max_tokens, temperature=temperature,
+        )
+        yield StreamChunk(
+            content_delta=response.content,
+            reasoning_delta=response.reasoning_content,
+            finish_reason=response.finish_reason,
+            usage=response.usage,
+            tool_calls=response.tool_calls,
+            done=True,
+        )
 
     async def aclose(self) -> None:
         """Optional async cleanup hook for provider resources."""
