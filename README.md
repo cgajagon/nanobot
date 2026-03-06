@@ -603,6 +603,48 @@ These features were added in the `feat/mem0-memory-integration` branch and are c
 
 Config file: `~/.nanobot/config.json`
 
+### Multi-Agent Routing
+
+Nanobot supports a multi-agent routing mode where a lightweight LLM classifier routes each message to a specialized agent role. Each role can have its own model, system prompt, temperature, and tool restrictions — while sharing conversation history and memory.
+
+Routing is **disabled by default** (zero behavioral change). Enable it in your config:
+
+```json
+{
+  "agents": {
+    "routing": {
+      "enabled": true,
+      "classifierModel": "gpt-4o-mini",
+      "defaultRole": "general",
+      "roles": [
+        {
+          "name": "code",
+          "description": "Code generation, debugging, refactoring",
+          "model": "claude-sonnet-4-20250514",
+          "deniedTools": ["message"]
+        },
+        {
+          "name": "research",
+          "description": "Web search, document analysis, fact-finding",
+          "deniedTools": ["write_file", "edit_file"]
+        }
+      ]
+    }
+  }
+}
+```
+
+Six built-in roles ship by default: **code**, **research**, **writing**, **system**, **pm**, and **general**. Custom roles in config extend or override these. If `classifierModel` is not set, the main agent model is used for routing.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Feature gate |
+| `classifierModel` | `string` | `null` | Cheap model for intent classification |
+| `defaultRole` | `string` | `"general"` | Fallback when classifier is uncertain |
+| `roles` | `array` | `[]` | Custom role definitions (extend/override defaults) |
+
+Each role supports: `name`, `description`, `model`, `temperature`, `systemPrompt`, `allowedTools`, `deniedTools`, `skills`, `maxIterations`, `enabled`.
+
 ### Providers
 
 > [!TIP]

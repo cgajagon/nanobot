@@ -289,6 +289,7 @@ class ContextBuilder:
         memory_token_budget: int = 900,
         memory_md_token_cap: int = 1500,
         memory_rollout_overrides: dict[str, Any] | None = None,
+        role_system_prompt: str = "",
     ):
         self.workspace = workspace
         self.memory = MemoryStore(workspace, rollout_overrides=memory_rollout_overrides)
@@ -296,6 +297,7 @@ class ContextBuilder:
         self.memory_retrieval_k = memory_retrieval_k
         self.memory_token_budget = memory_token_budget
         self.memory_md_token_cap = memory_md_token_cap
+        self.role_system_prompt = role_system_prompt
 
     def build_system_prompt(
         self,
@@ -315,6 +317,10 @@ class ContextBuilder:
 
         # Core identity
         parts.append(self._get_identity())
+
+        # Role-specific system prompt (multi-agent routing)
+        if self.role_system_prompt:
+            parts.append(f"# Agent Role\n\n{self.role_system_prompt}")
 
         # Bootstrap files
         bootstrap = self._load_bootstrap_files()
