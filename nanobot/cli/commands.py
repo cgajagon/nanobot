@@ -1068,6 +1068,133 @@ def cron_run(
 
 
 # ============================================================================
+# Routing Commands
+# ============================================================================
+
+routing_app = typer.Typer(help="Multi-agent routing diagnostics")
+app.add_typer(routing_app, name="routing")
+
+
+@routing_app.command("trace")
+def routing_trace(
+    last: int = typer.Option(20, "--last", "-n", help="Number of recent trace entries to show"),
+):
+    """Show the last N routing decisions from the trace log."""
+    import json
+
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    trace_path = config.workspace_path / "memory" / "routing_trace.jsonl"
+    if not trace_path.exists():
+        console.print("[dim]No routing trace found. Is multi-agent routing enabled?[/dim]")
+        raise typer.Exit(0)
+
+    entries: list[dict] = []
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    if not entries:
+        console.print("[dim]Trace file is empty.[/dim]")
+        raise typer.Exit(0)
+
+    recent = entries[-last:]
+    table = Table(title=f"Routing Trace (last {len(recent)} of {len(entries)})")
+    table.add_column("Time", style="dim", max_width=19)
+    table.add_column("Event", style="cyan")
+    table.add_column("Role", style="green")
+    table.add_column("Conf", style="yellow", justify="right")
+    table.add_column("Latency", style="magenta", justify="right")
+    table.add_column("From", style="blue")
+    table.add_column("Message", max_width=40)
+
+    for e in recent:
+        ts = str(e.get("timestamp", ""))[:19]
+        conf = f"{e.get('confidence', 0.0):.2f}" if e.get("confidence") else ""
+        lat = f"{e.get('latency_ms', 0.0):.0f}ms" if e.get("latency_ms") else ""
+        ok = "" if e.get("success", True) else " [red]FAIL[/red]"
+        table.add_row(
+            ts,
+            str(e.get("event", "")) + ok,
+            str(e.get("role", "")),
+            conf,
+            lat,
+            str(e.get("from_role", "")),
+            str(e.get("message", ""))[:40],
+        )
+    console.print(table)
+
+
+@routing_app.command("metrics")
+def routing_metrics_cmd():
+    """Show routing metrics (classifications, delegations, latencies)."""
+    import json
+
+    from nanobot.config.loader import load_config
+
+    config = load_config()
+    metrics_path = config.workspace_path / "memory" / "routing_metrics.json"
+    if not metrics_path.exists():
+        console.print("[dim]No routing metrics found. Is multi-agent routing enabled?[/dim]")
+        raise typer.Exit(0)
+
+    try:
+        data = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        console.print(f"[red]Failed to read metrics:[/red] {exc}")
+        raise typer.Exit(1)
+
+    table = Table(title="Routing Metrics")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green", justify="right")
+
+    # Core counters
+    for key in (
+        "routing_classifications",
+        "routing_delegations",
+        "routing_cycles_blocked",
+    ):
+        table.add_row(key, str(data.get(key, 0)))
+
+    # Latency stats
+    cls_count = int(data.get("routing_classifications", 0) or 0)
+    cls_sum = float(data.get("routing_classify_latency_sum_ms", 0) or 0)
+    cls_max = float(data.get("routing_classify_latency_max_ms", 0) or 0)
+    del_count = int(data.get("routing_delegations", 0) or 0)
+    del_sum = float(data.get("delegation_latency_sum_ms", 0) or 0)
+    del_max = float(data.get("delegation_latency_max_ms", 0) or 0)
+
+    table.add_row("classify_latency_avg_ms", f"{cls_sum / cls_count:.0f}" if cls_count else "—")
+    table.add_row("classify_latency_max_ms", f"{cls_max:.0f}" if cls_max else "—")
+    table.add_row(
+        "delegation_latency_avg_ms", f"{del_sum / del_count:.0f}" if del_count else "—"
+    )
+    table.add_row("delegation_latency_max_ms", f"{del_max:.0f}" if del_max else "—")
+
+    console.print(table)
+
+    # Per-role breakdown
+    role_keys = sorted(k for k in data if k.startswith("role_invocations:"))
+    if role_keys:
+        role_table = Table(title="Per-Role Stats")
+        role_table.add_column("Role", style="cyan")
+        role_table.add_column("Invocations", style="green", justify="right")
+        role_table.add_column("Tool Calls", style="yellow", justify="right")
+        for k in role_keys:
+            role_name = k.split(":", 1)[1]
+            invocations = data.get(k, 0)
+            tool_calls = data.get(f"role_tool_calls:{role_name}", 0)
+            role_table.add_row(role_name, str(invocations), str(tool_calls))
+        console.print(role_table)
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 

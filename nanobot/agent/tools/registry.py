@@ -14,6 +14,7 @@
   with a retry hint appended so the LLM can self-correct.
 """
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -33,6 +34,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._write_lock = asyncio.Lock()
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""
@@ -58,12 +60,22 @@ class ToolRegistry:
         """Execute a tool by name with given parameters.
 
         Always returns a ``ToolResult``.  Legacy tools that still return a
-        bare string are automatically wrapped.
+        bare string are automatically wrapped.  Non-readonly tools acquire
+        a write lock so parallel delegations don't interleave writes.
         """
         tool = self._tools.get(name)
         if not tool:
             not_found_err = ToolNotFoundError(name, self.tool_names)
             return ToolResult.fail(str(not_found_err), error_type="not_found")
+
+        if tool.readonly:
+            return await self._execute_inner(name, tool, params)
+
+        async with self._write_lock:
+            return await self._execute_inner(name, tool, params)
+
+    async def _execute_inner(self, name: str, tool: Tool, params: dict[str, Any]) -> ToolResult:
+        """Run validation and execute, wrapping errors."""
 
         try:
             errors = tool.validate_params(params)

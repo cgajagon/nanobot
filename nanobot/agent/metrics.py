@@ -161,3 +161,26 @@ def _utc_now_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+# ------------------------------------------------------------------
+# Routing metric key constants
+# ------------------------------------------------------------------
+
+ROUTING_CLASSIFICATIONS = "routing_classifications"
+ROUTING_DELEGATIONS = "routing_delegations"
+ROUTING_CYCLES_BLOCKED = "routing_cycles_blocked"
+ROUTING_CLASSIFY_LATENCY_SUM_MS = "routing_classify_latency_sum_ms"
+ROUTING_CLASSIFY_LATENCY_MAX_MS = "routing_classify_latency_max_ms"
+DELEGATION_LATENCY_SUM_MS = "delegation_latency_sum_ms"
+DELEGATION_LATENCY_MAX_MS = "delegation_latency_max_ms"
+
+
+def role_invocations_key(role_name: str) -> str:
+    """Return the metric key for per-role invocation count."""
+    return f"role_invocations:{role_name}"
+
+
+def role_tool_calls_key(role_name: str) -> str:
+    """Return the metric key for per-role tool-call count."""
+    return f"role_tool_calls:{role_name}"
