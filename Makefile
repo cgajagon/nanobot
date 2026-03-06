@@ -31,7 +31,16 @@ typecheck:
 check: lint typecheck test
 
 memory-eval:
-	$(PYTHON) scripts/memory_eval_ci.py --strict
+	$(PYTHON) scripts/memory_eval_ci.py \
+		--workspace /tmp/memory_eval_workspace \
+		--cases-file case/memory_eval_cases.json \
+		--seed-events case/memory_seed_events.jsonl \
+		--seed-profile case/memory_seed_profile.json \
+		--baseline-file case/memory_eval_baseline.json \
+		--output-file artifacts/memory_eval_latest.json \
+		--history-file artifacts/memory_eval_history.json \
+		--summary-file artifacts/memory_eval_summary.md \
+		--strict
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

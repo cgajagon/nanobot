@@ -38,7 +38,7 @@ from .mem0_adapter import _Mem0Adapter, _Mem0RuntimeInfo
 from .persistence import MemoryPersistence
 from .reranker import DEFAULT_MODEL as _DEFAULT_RERANKER_MODEL
 from .reranker import CrossEncoderReranker
-from .retrieval import _local_retrieve
+from .retrieval import _local_retrieve, _topic_fallback_retrieve
 
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
@@ -405,6 +405,8 @@ class MemoryStore:
             "timeline",
             "yesterday",
             "what did we try",
+            "correction",
+            "corrected",
         )
         reflection_markers = ("reflect", "reflection", "lesson", "learned", "retrospective")
         planning_markers = (
@@ -423,6 +425,9 @@ class MemoryStore:
             "resolved",
             "completed",
             "closed",
+            "project",
+            "projects",
+            "active",
         )
         architecture_markers = (
             "architecture",
@@ -457,36 +462,52 @@ class MemoryStore:
                 "candidate_multiplier": 3,
                 "half_life_days": 120.0,
                 "type_boost": {"semantic": 0.18, "episodic": -0.05, "reflection": -0.12},
+                "fallback_topics": [
+                    "knowledge", "user_preference", "relationship", "profile_update",
+                ],
+                "fallback_types": ["semantic"],
             },
             "debug_history": {
                 "candidate_multiplier": 4,
                 "half_life_days": 21.0,
                 "type_boost": {"semantic": -0.04, "episodic": 0.22, "reflection": -0.1},
+                "fallback_topics": ["infra", "user_correction"],
+                "fallback_types": ["episodic"],
             },
             "planning": {
                 "candidate_multiplier": 3,
                 "half_life_days": 45.0,
                 "type_boost": {"semantic": 0.1, "episodic": 0.08, "reflection": -0.06},
+                "fallback_topics": ["task_progress", "decision_log", "project"],
+                "fallback_types": ["episodic"],
             },
             "reflection": {
                 "candidate_multiplier": 3,
                 "half_life_days": 60.0,
                 "type_boost": {"semantic": 0.03, "episodic": -0.03, "reflection": 0.2},
+                "fallback_topics": ["reflection"],
+                "fallback_types": ["reflection"],
             },
             "constraints_lookup": {
                 "candidate_multiplier": 4,
                 "half_life_days": 180.0,
                 "type_boost": {"semantic": 0.24, "episodic": -0.1, "reflection": -0.14},
+                "fallback_topics": ["constraint"],
+                "fallback_types": ["semantic"],
             },
             "conflict_review": {
                 "candidate_multiplier": 4,
                 "half_life_days": 90.0,
-                "type_boost": {"semantic": 0.15, "episodic": 0.02, "reflection": -0.08},
+                "type_boost": {"semantic": 0.05, "episodic": 0.15, "reflection": -0.08},
+                "fallback_topics": ["decision_log"],
+                "fallback_types": ["episodic"],
             },
             "rollout_status": {
                 "candidate_multiplier": 2,
                 "half_life_days": 365.0,
                 "type_boost": {"semantic": 0.3, "episodic": -0.16, "reflection": -0.2},
+                "fallback_topics": ["rollout"],
+                "fallback_types": ["semantic"],
             },
         }
         return policy.get(intent, policy["fact_lookup"])
@@ -568,6 +589,12 @@ class MemoryStore:
         memory_type = str(item.get("memory_type", "")).strip().lower()
         if memory_type in self.MEMORY_TYPES:
             return memory_type
+        # Check metadata as fallback for raw JSONL events.
+        meta = item.get("metadata")
+        if isinstance(meta, dict):
+            meta_type = str(meta.get("memory_type", "")).strip().lower()
+            if meta_type in self.MEMORY_TYPES:
+                return meta_type
         event_type = str(item.get("type", "")).strip().lower()
         if event_type in {"task", "decision"}:
             return "episodic"
@@ -775,6 +802,14 @@ class MemoryStore:
         return {
             "consolidations": 0,
             "events_extracted": 0,
+            "extraction_source_llm": 0,
+            "extraction_source_heuristic": 0,
+            "extraction_events_preference": 0,
+            "extraction_events_fact": 0,
+            "extraction_events_task": 0,
+            "extraction_events_decision": 0,
+            "extraction_events_constraint": 0,
+            "extraction_events_relationship": 0,
             "event_dedup_merges": 0,
             "semantic_supersessions": 0,
             "retrieval_queries": 0,
@@ -1359,6 +1394,14 @@ class MemoryStore:
         )
         history_fallback_ratio = (source_history / source_total) if source_total else 0.0
 
+        # Extraction KPIs
+        extraction_llm = max(int(metrics.get("extraction_source_llm", 0)), 0)
+        extraction_heuristic = max(int(metrics.get("extraction_source_heuristic", 0)), 0)
+        extraction_total = extraction_llm + extraction_heuristic
+        heuristic_fallback_rate = (
+            (extraction_heuristic / extraction_total) if extraction_total else 0.0
+        )
+
         return {
             "metrics": metrics,
             "kpis": {
@@ -1371,6 +1414,7 @@ class MemoryStore:
                 "max_memory_context_tokens": memory_context_tokens_max,
                 "avg_shadow_overlap": round(avg_shadow_overlap, 4),
                 "history_fallback_ratio": round(history_fallback_ratio, 4),
+                "heuristic_fallback_rate": round(heuristic_fallback_rate, 4),
             },
             "backend": {
                 "mem0_enabled": self.mem0.enabled,
@@ -1440,6 +1484,18 @@ class MemoryStore:
             "lessons": "lesson",
             "updates": "update",
             "corrected": "correct",
+            "corrections": "correct",
+            "correction": "correct",
+            "preferences": "prefer",
+            "preference": "prefer",
+            "preferred": "prefer",
+            "prefers": "prefer",
+            "relationships": "relationship",
+            "reflections": "reflection",
+            "decisions": "decision",
+            "tasks": "task",
+            "incidents": "incident",
+            "superseded": "supersede",
         }
 
         def _normalize_phrase(value: str) -> str:
@@ -2636,15 +2692,62 @@ class MemoryStore:
         recency_half_life_days: float | None = None,
         embedding_provider: str | None = None,
     ) -> list[dict[str, Any]]:
-        # Local keyword fallback when mem0 is unavailable.
+        # Local BM25 retrieval with intent routing when mem0 is unavailable.
         if not self.mem0.enabled:
             events = self.read_events()
-            results = _local_retrieve(
+            intent = self._infer_retrieval_intent(query)
+            policy = self._retrieval_policy(intent)
+            candidate_k = max(1, min(top_k * int(policy.get("candidate_multiplier", 3)), 60))
+            half_life = recency_half_life_days or float(policy.get("half_life_days", 60.0))
+
+            # Detect queries about superseded/stale items.
+            q_lower = str(query or "").lower()
+            wants_superseded = any(
+                m in q_lower for m in ("supersede", "stale", "older fact", "replaced")
+            )
+
+            candidates = _local_retrieve(
                 events,
                 query,
-                top_k=top_k,
-                recency_half_life_days=recency_half_life_days,
+                top_k=candidate_k,
+                recency_half_life_days=half_life,
+                include_superseded=wants_superseded,
             )
+
+            # Topic-based fallback: fill remaining slots when BM25 yields few matches.
+            bm25_ids = {str(c.get("id", "")) for c in candidates}
+            fallback_topics = list(policy.get("fallback_topics", []))
+            fallback_types = list(policy.get("fallback_types", []))
+            remaining = max(0, candidate_k - len(candidates))
+            if remaining > 0 and (fallback_topics or fallback_types):
+                fallback = _topic_fallback_retrieve(
+                    events,
+                    target_topics=fallback_topics,
+                    target_memory_types=fallback_types,
+                    exclude_ids=bm25_ids,
+                    top_k=remaining,
+                    base_score=0.25,
+                    include_superseded=wants_superseded,
+                )
+                candidates.extend(fallback)
+
+            # Apply intent-based type boosts and metadata enrichment.
+            for item in candidates:
+                memory_type = self._memory_type_for_item(item)
+                item["memory_type"] = memory_type
+                # Promote metadata fields to top level for downstream consumers.
+                meta = item.get("metadata", {})
+                if not item.get("topic"):
+                    item["topic"] = str(meta.get("topic", "")).strip()
+                if not item.get("stability"):
+                    item["stability"] = str(meta.get("stability", "medium")).strip()
+                base_score = float(item.get("retrieval_reason", {}).get("score", 0.0))
+                type_boost = float(policy.get("type_boost", {}).get(memory_type, 0.0))
+                stability = str(item.get("stability", "medium")).lower()
+                stability_boost = {"high": 0.03, "medium": 0.01, "low": -0.02}.get(stability, 0.0)
+                item["score"] = base_score + type_boost + stability_boost
+            candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            results = candidates[:top_k]
             self._record_metric("retrieval_queries", 1)
             if results:
                 self._record_metric("retrieval_hits", 1)
@@ -3982,6 +4085,16 @@ class MemoryStore:
                 profile["last_verified_at"] = self._utc_now_iso()
                 self.write_profile(profile)
                 self._record_metric("events_extracted", events_written)
+
+            # Track extraction source and per-type distribution
+            source = self.extractor.last_extraction_source
+            if source:
+                self._record_metric(f"extraction_source_{source}", 1)
+            for evt in events:
+                etype = str(evt.get("type", "fact"))
+                key = f"extraction_events_{etype}"
+                if key in self._default_metrics():
+                    self._record_metric(key, 1)
 
             if profile_added > 0:
                 self.auto_resolve_conflicts(max_items=10)
