@@ -320,6 +320,31 @@ class AgentsConfig(Base):
     """Agent configuration."""
 
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
+    routing: "RoutingConfig" = Field(default_factory=lambda: RoutingConfig())
+
+
+class AgentRoleConfig(Base):
+    """Configuration for a specialized agent role."""
+
+    name: str  # Unique role identifier (e.g. "code", "research")
+    description: str = ""  # What this agent specializes in (used in routing prompt)
+    model: str | None = None  # Override model (None = use default)
+    temperature: float | None = None  # Override temperature
+    system_prompt: str = ""  # Additional system prompt injected after core identity
+    allowed_tools: list[str] | None = None  # Tool allowlist (None = all tools)
+    denied_tools: list[str] | None = None  # Tool denylist
+    skills: list[str] = Field(default_factory=list)  # Skill names to always load
+    max_iterations: int | None = None  # Override iteration limit
+    enabled: bool = True
+
+
+class RoutingConfig(Base):
+    """Multi-agent routing configuration."""
+
+    enabled: bool = False  # Feature gate (disabled by default)
+    classifier_model: str | None = None  # Cheap model for classification (e.g. "gpt-4o-mini")
+    roles: list[AgentRoleConfig] = Field(default_factory=list)  # User-defined agent roles
+    default_role: str = "general"  # Fallback when classifier is uncertain
 
 
 class ProviderConfig(Base):

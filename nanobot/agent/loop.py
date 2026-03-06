@@ -53,7 +53,8 @@ from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.agent.coordinator import Coordinator
+    from nanobot.config.schema import AgentRoleConfig, ChannelsConfig, ExecToolConfig, RoutingConfig
     from nanobot.cron.service import CronService
 
 
@@ -81,6 +82,8 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        role_config: AgentRoleConfig | None = None,
+        routing_config: RoutingConfig | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
 
@@ -89,9 +92,24 @@ class AgentLoop:
         self.provider = provider
         self.config = config
         self.workspace = config.workspace_path
-        self.model = config.model or provider.get_default_model()
-        self.max_iterations = config.max_iterations
-        self.temperature = config.temperature
+        self.role_config = role_config
+        self.role_name = role_config.name if role_config else ""
+        # Role overrides for model, temperature, max_iterations
+        self.model = (
+            (role_config.model if role_config and role_config.model else None)
+            or config.model
+            or provider.get_default_model()
+        )
+        self.max_iterations = (
+            role_config.max_iterations
+            if role_config and role_config.max_iterations is not None
+            else config.max_iterations
+        )
+        self.temperature = (
+            role_config.temperature
+            if role_config and role_config.temperature is not None
+            else config.temperature
+        )
         self.max_tokens = config.max_tokens
         self.context_window_tokens = config.context_window_tokens
         self.memory_window = config.memory_window
@@ -130,6 +148,7 @@ class AgentLoop:
             memory_token_budget=self.memory_token_budget,
             memory_md_token_cap=config.memory_md_token_cap,
             memory_rollout_overrides=self.memory_rollout_overrides,
+            role_system_prompt=role_config.system_prompt if role_config else "",
         )
         self.sessions = session_manager or SessionManager(self.workspace)
         self.tools = ToolRegistry()
@@ -155,34 +174,54 @@ class AgentLoop:
         self._consolidation_locks: dict[str, asyncio.Lock] = {}
         self._register_default_tools()
 
+        # Multi-agent coordinator (initialized lazily in run() if routing enabled)
+        self._routing_config = routing_config
+        self._coordinator: Coordinator | None = None
+
     def _register_default_tools(self) -> None:
-        """Register the default set of tools."""
+        """Register the default set of tools, filtered by role config."""
+        role = self.role_config
+        allowed = set(role.allowed_tools) if role and role.allowed_tools is not None else None
+        denied = set(role.denied_tools) if role and role.denied_tools else set()
         allowed_dir = self.workspace if self.restrict_to_workspace else None
+
+        def _should_register(name: str) -> bool:
+            if allowed is not None and name not in allowed:
+                return False
+            return name not in denied
+
         for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
-            self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(
-            ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-                shell_mode=self.config.shell_mode,
-            )
+            tool = cls(workspace=self.workspace, allowed_dir=allowed_dir)
+            if _should_register(tool.name):
+                self.tools.register(tool)
+
+        exec_tool = ExecTool(
+            working_dir=str(self.workspace),
+            timeout=self.exec_config.timeout,
+            restrict_to_workspace=self.restrict_to_workspace,
+            shell_mode=self.config.shell_mode,
         )
-        self.tools.register(WebSearchTool(api_key=self.brave_api_key))
-        self.tools.register(WebFetchTool())
-        self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
-        self.tools.register(
-            FeedbackTool(
-                events_file=self.workspace / "memory" / "events.jsonl",
-            )
-        )
+        if _should_register(exec_tool.name):
+            self.tools.register(exec_tool)
+
+        for extra_tool in (
+            WebSearchTool(api_key=self.brave_api_key),
+            WebFetchTool(),
+            MessageTool(send_callback=self.bus.publish_outbound),
+            SpawnTool(manager=self.subagents),
+            FeedbackTool(events_file=self.workspace / "memory" / "events.jsonl"),
+        ):
+            if _should_register(extra_tool.name):
+                self.tools.register(extra_tool)
+
         if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+            cron_tool = CronTool(self.cron_service)
+            if _should_register(cron_tool.name):
+                self.tools.register(cron_tool)
 
         # Skill-provided custom tools (Step 14)
-        for tool in self.context.skills.discover_tools():
-            self.tools.register(tool)
+        for skill_tool in self.context.skills.discover_tools():
+            self.tools.register(skill_tool)
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -805,21 +844,59 @@ class AgentLoop:
         )
 
     async def run(self) -> None:
-        """Run the agent loop, processing messages from the bus."""
+        """Run the agent loop, processing messages from the bus.
+
+        When multi-agent routing is enabled (``routing_config.enabled``),
+        each inbound message is first classified by the coordinator.  The
+        coordinator returns an ``AgentRoleConfig`` whose overrides
+        (model, system prompt, tool filters) are applied for that turn
+        via ``_apply_role_for_turn``.  When routing is disabled the loop
+        behaves exactly as before.
+        """
         self._running = True
         await self._connect_mcp()
+
+        # Lazy-initialise coordinator if routing is enabled
+        if self._routing_config and self._routing_config.enabled and self._coordinator is None:
+            from nanobot.agent.coordinator import Coordinator, build_default_registry
+
+            registry = build_default_registry(self._routing_config.default_role)
+            # Merge user-defined roles (override defaults with same name)
+            for role_cfg in self._routing_config.roles:
+                registry.register(role_cfg)
+            self._coordinator = Coordinator(
+                provider=self.provider,
+                registry=registry,
+                classifier_model=self._routing_config.classifier_model,
+                default_role=self._routing_config.default_role,
+            )
+            logger.info(
+                "Multi-agent routing enabled with {} roles",
+                len(registry),
+            )
+
         logger.info("Agent loop started")
 
         while self._running:
             try:
                 msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                role_applied = False
                 try:
+                    # Route through coordinator if enabled (skip system messages)
+                    role_applied = False
+                    if self._coordinator and msg.channel != "system":
+                        role = await self._coordinator.route(msg.content)
+                        self._apply_role_for_turn(role)
+                        role_applied = True
+
                     response = await self._process_message(msg)
+
+                    if role_applied:
+                        self._reset_role_after_turn()
+
                     if response is not None:
                         await self.bus.publish_outbound(response)
                     elif msg.channel in {"cli", "telegram"}:
-                        # Emit an empty outbound to let channel-side state (e.g. Telegram typing indicator)
-                        # flush even when the assistant only used tool-driven delivery in this turn.
                         await self.bus.publish_outbound(
                             OutboundMessage(
                                 channel=msg.channel,
@@ -830,6 +907,8 @@ class AgentLoop:
                         )
                 except Exception as e:
                     logger.error("Error processing message: {}", e)
+                    if role_applied:
+                        self._reset_role_after_turn()
                     await self.bus.publish_outbound(
                         OutboundMessage(
                             channel=msg.channel,
@@ -839,6 +918,55 @@ class AgentLoop:
                     )
             except asyncio.TimeoutError:
                 continue
+
+    # ------------------------------------------------------------------
+    # Per-turn role switching (multi-agent routing)
+    # ------------------------------------------------------------------
+
+    def _apply_role_for_turn(self, role: AgentRoleConfig) -> None:
+        """Temporarily override agent settings for the current turn."""
+        # Save originals for reset
+        self._saved_model = self.model
+        self._saved_temperature = self.temperature
+        self._saved_max_iterations = self.max_iterations
+        self._saved_role_prompt = self.context.role_system_prompt
+        self._saved_tools: dict[str, Any] = dict(self.tools._tools)
+
+        if role.model:
+            self.model = role.model
+        if role.temperature is not None:
+            self.temperature = role.temperature
+        if role.max_iterations is not None:
+            self.max_iterations = role.max_iterations
+        self.context.role_system_prompt = role.system_prompt or ""
+        self.role_name = role.name
+
+        # Apply role-specific tool filtering
+        self._filter_tools_for_role(role)
+        logger.debug("Applied role '{}' for turn (model={})", role.name, self.model)
+
+    def _filter_tools_for_role(self, role: AgentRoleConfig) -> None:
+        """Remove tools that the role's allowed/denied lists exclude."""
+        allowed = set(role.allowed_tools) if role.allowed_tools is not None else None
+        denied = set(role.denied_tools) if role.denied_tools else set()
+        if allowed is None and not denied:
+            return
+        for name in list(self.tools._tools):
+            if allowed is not None and name not in allowed:
+                self.tools.unregister(name)
+            elif name in denied:
+                self.tools.unregister(name)
+
+    def _reset_role_after_turn(self) -> None:
+        """Restore original agent settings after a routed turn."""
+        self.model = getattr(self, "_saved_model", self.model)
+        self.temperature = getattr(self, "_saved_temperature", self.temperature)
+        self.max_iterations = getattr(self, "_saved_max_iterations", self.max_iterations)
+        self.context.role_system_prompt = getattr(self, "_saved_role_prompt", "")
+        self.role_name = self.role_config.name if self.role_config else ""
+        # Restore full tool set
+        if hasattr(self, "_saved_tools"):
+            self.tools._tools = self._saved_tools
 
     async def close_mcp(self) -> None:
         """Close MCP connections."""
