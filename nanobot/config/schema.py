@@ -345,6 +345,7 @@ class RoutingConfig(Base):
     classifier_model: str | None = None  # Cheap model for classification (e.g. "gpt-4o-mini")
     roles: list[AgentRoleConfig] = Field(default_factory=list)  # User-defined agent roles
     default_role: str = "general"  # Fallback when classifier is uncertain
+    confidence_threshold: float = 0.6  # Below this confidence, fall back to default_role
 
 
 class ProviderConfig(Base):

@@ -5,6 +5,7 @@ from nanobot.agent.coordinator import Coordinator
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.registry import AgentRegistry
+from nanobot.agent.scratchpad import Scratchpad
 from nanobot.agent.skills import SkillsLoader
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "ContextBuilder",
     "Coordinator",
     "MemoryStore",
+    "Scratchpad",
     "SkillsLoader",
 ]

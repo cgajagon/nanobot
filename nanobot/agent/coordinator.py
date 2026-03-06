@@ -8,6 +8,7 @@ and returns the matching ``AgentRoleConfig`` for the agent loop to use.
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -92,7 +93,9 @@ def build_default_registry(default_role: str = "general") -> AgentRegistry:
 
 _CLASSIFY_SYSTEM = (
     "You are a message router. Given a user message, decide which specialist agent "
-    "should handle it. Reply with ONLY a JSON object: {\"role\": \"<name>\"}. "
+    "should handle it. Reply with ONLY a JSON object: "
+    '{\"role\": \"<name>\", \"confidence\": <0.0-1.0>}. '
+    "confidence 1.0 = very certain, 0.0 = no idea. "
     "Do not include any other text."
 )
 
@@ -127,8 +130,8 @@ class Coordinator:
             f"Which agent should handle this? Reply with {{\"role\": \"<name>\"}}."
         )
 
-    async def classify(self, message: str) -> str:
-        """Classify a message and return the role name.
+    async def classify(self, message: str) -> tuple[str, float]:
+        """Classify a message and return ``(role_name, confidence)``.
 
         Uses a lightweight LLM call. Falls back to *default_role* on any
         error or unrecognised response.
@@ -136,6 +139,7 @@ class Coordinator:
         model = self._classifier_model or self._provider.get_default_model()
         user_prompt = self._build_classify_prompt(message)
 
+        t0 = time.monotonic()
         try:
             response = await self._provider.chat(
                 messages=[
@@ -148,33 +152,45 @@ class Coordinator:
                 max_tokens=64,
             )
             raw = (response.content or "").strip()
-            parsed = self._parse_response(raw)
-            role_name = parsed if parsed in self._registry else self._default_role
-            logger.info("Coordinator classified → {} (raw: {})", role_name, raw)
-            return role_name
+            parsed_role, confidence = self._parse_response(raw)
+            role_name = parsed_role if parsed_role in self._registry else self._default_role
+            latency_ms = (time.monotonic() - t0) * 1000
+            logger.info(
+                "Coordinator classified → {} (confidence={:.2f}, latency={:.0f}ms, raw: {})",
+                role_name,
+                confidence,
+                latency_ms,
+                raw,
+            )
+            return role_name, confidence
         except Exception:
             logger.warning("Coordinator classification failed, using default role")
-            return self._default_role
+            return self._default_role, 0.0
 
-    def _parse_response(self, raw: str) -> str:
-        """Extract role name from the classifier's raw response."""
+    def _parse_response(self, raw: str) -> tuple[str, float]:
+        """Extract role name and confidence from the classifier's raw response.
+
+        Returns ``(role_name, confidence)``.
+        """
         # Try JSON parse first
         try:
             data: dict[str, Any] = json.loads(raw)
             if isinstance(data, dict) and "role" in data:
-                return str(data["role"]).strip().lower()
+                role = str(data["role"]).strip().lower()
+                confidence = float(data.get("confidence", 1.0))
+                return role, min(max(confidence, 0.0), 1.0)
         except (json.JSONDecodeError, ValueError):
             pass
         # Fallback: look for a known role name in the raw text
         lower = raw.lower()
         for name in self._registry.role_names():
             if name in lower:
-                return name
-        return self._default_role
+                return name, 0.5  # Text-scan match gets moderate confidence
+        return self._default_role, 0.0
 
     async def route(self, message: str) -> AgentRoleConfig:
         """Classify message and return the matching role config."""
-        role_name = await self.classify(message)
+        role_name, _confidence = await self.classify(message)
         role = self._registry.get(role_name)
         if role is None:
             role = self._registry.get_default()
@@ -182,3 +198,10 @@ class Coordinator:
             # Should never happen if registry has defaults, but be safe
             return AgentRoleConfig(name=self._default_role, description="General assistant")
         return role
+
+    def route_direct(self, role_name: str) -> AgentRoleConfig | None:
+        """Look up a role by name without LLM classification.
+
+        Returns ``None`` when *role_name* is not found in the registry.
+        """
+        return self._registry.get(role_name)

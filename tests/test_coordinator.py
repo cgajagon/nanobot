@@ -106,38 +106,50 @@ class TestClassify:
     async def test_json_response(self) -> None:
         provider = FakeProvider('{"role": "code"}')
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Write a Python function")
-        assert result == "code"
+        role_name, confidence = await coordinator.classify("Write a Python function")
+        assert role_name == "code"
+        assert confidence == 1.0
 
     async def test_json_with_whitespace(self) -> None:
         provider = FakeProvider('  { "role" : "research" }  ')
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Search the web for info")
-        assert result == "research"
+        role_name, confidence = await coordinator.classify("Search the web for info")
+        assert role_name == "research"
+        assert confidence == 1.0
+
+    async def test_json_with_confidence(self) -> None:
+        provider = FakeProvider('{"role": "code", "confidence": 0.85}')
+        coordinator = Coordinator(provider, _make_registry())
+        role_name, confidence = await coordinator.classify("Write a function")
+        assert role_name == "code"
+        assert confidence == 0.85
 
     async def test_fallback_text_scan(self) -> None:
         provider = FakeProvider("I think the code agent should handle this")
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Fix the bug")
-        assert result == "code"
+        role_name, confidence = await coordinator.classify("Fix the bug")
+        assert role_name == "code"
+        assert confidence == 0.5
 
     async def test_unknown_role_returns_default(self) -> None:
         provider = FakeProvider('{"role": "nonexistent"}')
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Do something")
-        assert result == "general"
+        role_name, _ = await coordinator.classify("Do something")
+        assert role_name == "general"
 
     async def test_garbage_response_returns_default(self) -> None:
         provider = FakeProvider("lolwut no json here 🤷")
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Something")
-        assert result == "general"
+        role_name, confidence = await coordinator.classify("Something")
+        assert role_name == "general"
+        assert confidence == 0.0
 
     async def test_provider_error_returns_default(self) -> None:
         provider = FailingProvider()
         coordinator = Coordinator(provider, _make_registry())
-        result = await coordinator.classify("Hello")
-        assert result == "general"
+        role_name, confidence = await coordinator.classify("Hello")
+        assert role_name == "general"
+        assert confidence == 0.0
 
     async def test_classifier_model_override(self) -> None:
         """When classifier_model is set, it should be passed to the provider."""
@@ -154,6 +166,23 @@ class TestClassify:
         )
         await coordinator.classify("Hi")
         assert calls[0]["model"] == "gpt-4o-mini"
+
+
+# ---------------------------------------------------------------------------
+# Coordinator.route_direct
+# ---------------------------------------------------------------------------
+
+
+class TestRouteDirect:
+    def test_returns_role_config(self) -> None:
+        coordinator = Coordinator(FakeProvider(""), _make_registry())
+        role = coordinator.route_direct("code")
+        assert role is not None
+        assert role.name == "code"
+
+    def test_unknown_role_returns_none(self) -> None:
+        coordinator = Coordinator(FakeProvider(""), _make_registry())
+        assert coordinator.route_direct("nonexistent") is None
 
 
 # ---------------------------------------------------------------------------
@@ -190,19 +219,41 @@ class TestRoute:
 class TestParseResponse:
     def test_json_object(self) -> None:
         coordinator = Coordinator(FakeProvider(""), _make_registry())
-        assert coordinator._parse_response('{"role": "code"}') == "code"
+        role, confidence = coordinator._parse_response('{"role": "code"}')
+        assert role == "code"
+        assert confidence == 1.0
+
+    def test_json_with_confidence_field(self) -> None:
+        coordinator = Coordinator(FakeProvider(""), _make_registry())
+        role, confidence = coordinator._parse_response(
+            '{"role": "code", "confidence": 0.75}'
+        )
+        assert role == "code"
+        assert confidence == 0.75
 
     def test_json_uppercase_normalised(self) -> None:
         coordinator = Coordinator(FakeProvider(""), _make_registry())
-        assert coordinator._parse_response('{"role": "CODE"}') == "code"
+        role, _ = coordinator._parse_response('{"role": "CODE"}')
+        assert role == "code"
 
     def test_plain_text_fallback(self) -> None:
         coordinator = Coordinator(FakeProvider(""), _make_registry())
-        assert coordinator._parse_response("Use the research agent") == "research"
+        role, confidence = coordinator._parse_response("Use the research agent")
+        assert role == "research"
+        assert confidence == 0.5
 
     def test_no_match_returns_default(self) -> None:
         coordinator = Coordinator(FakeProvider(""), _make_registry())
-        assert coordinator._parse_response("something random") == "general"
+        role, confidence = coordinator._parse_response("something random")
+        assert role == "general"
+        assert confidence == 0.0
+
+    def test_confidence_clamped(self) -> None:
+        coordinator = Coordinator(FakeProvider(""), _make_registry())
+        _, conf = coordinator._parse_response('{"role": "code", "confidence": 1.5}')
+        assert conf == 1.0
+        _, conf2 = coordinator._parse_response('{"role": "code", "confidence": -0.5}')
+        assert conf2 == 0.0
 
 
 # ---------------------------------------------------------------------------

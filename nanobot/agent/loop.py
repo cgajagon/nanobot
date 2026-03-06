@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from contextlib import AsyncExitStack
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -36,25 +37,40 @@ from nanobot.agent.context import (
     ContextBuilder,
     summarize_and_compress,
 )
-from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.metrics import (
+    DELEGATION_LATENCY_MAX_MS,
+    DELEGATION_LATENCY_SUM_MS,
+    ROUTING_CLASSIFICATIONS,
+    ROUTING_CLASSIFY_LATENCY_MAX_MS,
+    ROUTING_CLASSIFY_LATENCY_SUM_MS,
+    ROUTING_CYCLES_BLOCKED,
+    ROUTING_DELEGATIONS,
+    MetricsCollector,
+    role_invocations_key,
+    role_tool_calls_key,
+)
+from nanobot.agent.scratchpad import Scratchpad
+from nanobot.agent.subagent import SubagentManager, run_tool_loop
 from nanobot.agent.tools.base import ToolResult
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.delegate import DelegateParallelTool, DelegateTool, _CycleError
 from nanobot.agent.tools.feedback import FeedbackTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.scratchpad import ScratchpadReadTool, ScratchpadWriteTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage, ReactionEvent
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import AgentConfig
+from nanobot.config.schema import AgentConfig, AgentRoleConfig
 from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
     from nanobot.agent.coordinator import Coordinator
-    from nanobot.config.schema import AgentRoleConfig, ChannelsConfig, ExecToolConfig, RoutingConfig
+    from nanobot.config.schema import ChannelsConfig, ExecToolConfig, RoutingConfig
     from nanobot.cron.service import CronService
 
 
@@ -178,6 +194,15 @@ class AgentLoop:
         self._routing_config = routing_config
         self._coordinator: Coordinator | None = None
 
+        # Delegation tracking
+        self._delegation_stack: list[str] = []
+        self._routing_trace: list[dict[str, Any]] = []
+        self._scratchpad: Scratchpad | None = None
+
+        # Routing metrics (lazy: only created when routing is enabled)
+        self._routing_metrics: MetricsCollector | None = None
+        self._trace_path = self.workspace / "memory" / "routing_trace.jsonl"
+
     def _register_default_tools(self) -> None:
         """Register the default set of tools, filtered by role config."""
         role = self.role_config
@@ -218,6 +243,23 @@ class AgentLoop:
             cron_tool = CronTool(self.cron_service)
             if _should_register(cron_tool.name):
                 self.tools.register(cron_tool)
+
+        # Delegation tools
+        delegate_tool = DelegateTool()
+        if _should_register(delegate_tool.name):
+            self.tools.register(delegate_tool)
+        delegate_parallel_tool = DelegateParallelTool()
+        if _should_register(delegate_parallel_tool.name):
+            self.tools.register(delegate_parallel_tool)
+
+        # Scratchpad tools (scratchpad instance swapped per session in _ensure_scratchpad)
+        placeholder_pad = Scratchpad(self.workspace / "sessions" / "_placeholder")
+        for st in (
+            ScratchpadWriteTool(placeholder_pad),
+            ScratchpadReadTool(placeholder_pad),
+        ):
+            if _should_register(st.name):
+                self.tools.register(st)
 
         # Skill-provided custom tools (Step 14)
         for skill_tool in self.context.skills.discover_tools():
@@ -267,6 +309,23 @@ class AgentLoop:
                     chat_id,
                     session_key=f"{channel}:{chat_id}",
                 )
+
+    def _ensure_scratchpad(self, session_key: str) -> None:
+        """Initialise (or swap) the per-session scratchpad and update tools."""
+        from nanobot.utils.helpers import safe_filename
+
+        safe_key = safe_filename(session_key.replace(":", "_"))
+        session_dir = self.workspace / "sessions" / safe_key
+        session_dir.mkdir(parents=True, exist_ok=True)
+        self._scratchpad = Scratchpad(session_dir)
+
+        # Update scratchpad tool references
+        write_tool = self.tools.get("write_scratchpad")
+        if isinstance(write_tool, ScratchpadWriteTool):
+            write_tool._scratchpad = self._scratchpad
+        read_tool = self.tools.get("read_scratchpad")
+        if isinstance(read_tool, ScratchpadReadTool):
+            read_tool._scratchpad = self._scratchpad
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -870,6 +929,13 @@ class AgentLoop:
                 classifier_model=self._routing_config.classifier_model,
                 default_role=self._routing_config.default_role,
             )
+            self._wire_delegate_tools()
+            # Routing metrics collector
+            self._routing_metrics = MetricsCollector(
+                self.workspace / "memory" / "routing_metrics.json",
+                flush_interval_s=30.0,
+            )
+            self._routing_metrics.start()
             logger.info(
                 "Multi-agent routing enabled with {} roles",
                 len(registry),
@@ -885,7 +951,43 @@ class AgentLoop:
                     # Route through coordinator if enabled (skip system messages)
                     role_applied = False
                     if self._coordinator and msg.channel != "system":
-                        role = await self._coordinator.route(msg.content)
+                        t0_classify = time.monotonic()
+                        role_name, confidence = await self._coordinator.classify(
+                            msg.content
+                        )
+                        classify_latency_ms = (time.monotonic() - t0_classify) * 1000
+                        # Confidence-aware: fall back to default on low confidence
+                        threshold = (
+                            self._routing_config.confidence_threshold
+                            if self._routing_config
+                            else 0.6
+                        )
+                        if confidence < threshold:
+                            role_name = (
+                                self._routing_config.default_role
+                                if self._routing_config
+                                else "general"
+                            )
+                            logger.info(
+                                "Low confidence ({:.2f} < {:.2f}), using default role '{}'",
+                                confidence,
+                                threshold,
+                                role_name,
+                            )
+                        role = (
+                            self._coordinator.route_direct(role_name)
+                            or self._coordinator.registry.get_default()
+                            or AgentRoleConfig(
+                                name=role_name, description="General assistant"
+                            )
+                        )
+                        self._record_route_trace(
+                            "route",
+                            role=role.name,
+                            confidence=confidence,
+                            latency_ms=classify_latency_ms,
+                            message_excerpt=msg.content,
+                        )
                         self._apply_role_for_turn(role)
                         role_applied = True
 
@@ -918,6 +1020,229 @@ class AgentLoop:
                     )
             except asyncio.TimeoutError:
                 continue
+
+    # ------------------------------------------------------------------
+    # Delegation dispatch
+    # ------------------------------------------------------------------
+
+    def _wire_delegate_tools(self) -> None:
+        """Set the dispatch callback on all registered delegate tools."""
+        for name in ("delegate", "delegate_parallel"):
+            tool = self.tools.get(name)
+            if isinstance(tool, (DelegateTool, DelegateParallelTool)):
+                tool.set_dispatch(self._dispatch_delegation)
+
+    def _record_route_trace(
+        self,
+        event: str,
+        *,
+        role: str = "",
+        confidence: float = 0.0,
+        latency_ms: float = 0.0,
+        from_role: str = "",
+        depth: int = 0,
+        success: bool = True,
+        message_excerpt: str = "",
+    ) -> None:
+        """Append an entry to the in-memory routing trace and record metrics."""
+        import json as _json
+
+        entry = {
+            "event": event,
+            "role": role,
+            "confidence": confidence,
+            "latency_ms": round(latency_ms, 1),
+            "from_role": from_role,
+            "depth": depth,
+            "success": success,
+            "message": message_excerpt[:80],
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._routing_trace.append(entry)
+
+        # Persist to JSONL trace file
+        try:
+            self._trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._trace_path.open("a", encoding="utf-8") as f:
+                f.write(_json.dumps(entry, default=str) + "\n")
+        except Exception:
+            pass  # best-effort: don't break routing on I/O failure
+
+        # Record counters
+        m = self._routing_metrics
+        if m is None:
+            return
+
+        if event == "route":
+            m.record(ROUTING_CLASSIFICATIONS)
+            m.record(ROUTING_CLASSIFY_LATENCY_SUM_MS, int(latency_ms))
+            m.set_max(ROUTING_CLASSIFY_LATENCY_MAX_MS, latency_ms)
+            m.record(role_invocations_key(role))
+        elif event == "delegate":
+            m.record(ROUTING_DELEGATIONS)
+        elif event == "delegate_cycle_blocked":
+            m.record(ROUTING_CYCLES_BLOCKED)
+        elif event == "delegate_complete":
+            m.record(DELEGATION_LATENCY_SUM_MS, int(latency_ms))
+            m.set_max(DELEGATION_LATENCY_MAX_MS, latency_ms)
+
+    def get_routing_trace(self) -> list[dict[str, Any]]:
+        """Return a copy of the routing trace."""
+        return list(self._routing_trace)
+
+    async def _dispatch_delegation(
+        self,
+        target_role: str,
+        task: str,
+        context: str | None,
+    ) -> str:
+        """Route a delegated sub-task through the coordinator and execute it.
+
+        The delegation stack prevents cycles (A→B→A), while still allowing
+        arbitrarily deep chains (A→B→C→…).  The delegated agent runs a
+        bounded ``run_tool_loop`` from ``subagent.py``.
+        """
+        if not self._coordinator:
+            raise RuntimeError("Coordinator not available for delegation")
+
+        # Resolve role
+        role: AgentRoleConfig | None = None
+        if target_role:
+            role = self._coordinator.route_direct(target_role)
+        if role is None:
+            role = await self._coordinator.route(task)
+
+        # Cycle guard
+        if role.name in self._delegation_stack:
+            chain = " → ".join(self._delegation_stack + [role.name])
+            self._record_route_trace(
+                "delegate_cycle_blocked",
+                role=role.name,
+                from_role=self._delegation_stack[-1] if self._delegation_stack else "",
+                depth=len(self._delegation_stack),
+                success=False,
+                message_excerpt=task,
+            )
+            raise _CycleError(f"Delegation cycle detected: {chain}")
+
+        from_role = self._delegation_stack[-1] if self._delegation_stack else self.role_name
+        depth = len(self._delegation_stack)
+        self._record_route_trace(
+            "delegate",
+            role=role.name,
+            from_role=from_role,
+            depth=depth,
+            message_excerpt=task,
+        )
+
+        t0 = time.monotonic()
+        self._delegation_stack.append(role.name)
+        try:
+            result = await self._execute_delegated_agent(role, task, context)
+            latency_ms = (time.monotonic() - t0) * 1000
+            self._record_route_trace(
+                "delegate_complete",
+                role=role.name,
+                latency_ms=latency_ms,
+                depth=depth,
+                success=True,
+                message_excerpt=task,
+            )
+            return result
+        except Exception:
+            latency_ms = (time.monotonic() - t0) * 1000
+            self._record_route_trace(
+                "delegate_complete",
+                role=role.name,
+                latency_ms=latency_ms,
+                depth=depth,
+                success=False,
+                message_excerpt=task,
+            )
+            raise
+        finally:
+            self._delegation_stack.pop()
+
+    async def _execute_delegated_agent(
+        self,
+        role: AgentRoleConfig,
+        task: str,
+        context: str | None,
+    ) -> str:
+        """Set up and run a delegated agent for a single sub-task."""
+
+        # Build isolated tool set (same tools as subagent, plus delegate for chaining)
+        tools = ToolRegistry()
+        allowed_dir = self.workspace if self.restrict_to_workspace else None
+        for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
+            tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
+        tools.register(
+            ExecTool(
+                working_dir=str(self.workspace),
+                timeout=self.exec_config.timeout,
+                restrict_to_workspace=self.restrict_to_workspace,
+            )
+        )
+        tools.register(WebSearchTool(api_key=self.brave_api_key))
+        tools.register(WebFetchTool())
+
+        # Allow further delegation (with the shared stack for cycle detection)
+        child_delegate = DelegateTool()
+        child_delegate.set_dispatch(self._dispatch_delegation)
+        tools.register(child_delegate)
+
+        # Apply role-specific tool filters
+        if role.denied_tools:
+            for denied in role.denied_tools:
+                tools.unregister(denied)
+        if role.allowed_tools is not None:
+            allowed = set(role.allowed_tools)
+            for tname in list(tools._tools):
+                if tname not in allowed:
+                    tools.unregister(tname)
+
+        # Build messages
+        system_prompt = (
+            f"You are the **{role.name}** specialist agent.\n\n"
+            f"{role.system_prompt or ''}\n\n"
+            f"Complete the following task and return a clear, concise result."
+        )
+        user_content = task
+        if context:
+            user_content = f"{task}\n\nAdditional context:\n{context}"
+
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+        # Bound iterations: min of remaining parent budget or 10
+        max_iter = min(self.max_iterations, 10)
+        model = role.model or self.model
+        temperature = role.temperature if role.temperature is not None else self.temperature
+
+        result, tools_used, _ = await run_tool_loop(
+            provider=self.provider,
+            tools=tools,
+            messages=messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=self.max_tokens,
+            max_iterations=max_iter,
+        )
+
+        summary = result or "No result produced."
+
+        # Write to scratchpad if available
+        if self._scratchpad:
+            entry_id = await self._scratchpad.write(
+                role=role.name,
+                label=task[:80],
+                content=summary,
+            )
+            return f"[scratchpad:{entry_id}] {summary}"
+
+        return summary
 
     # ------------------------------------------------------------------
     # Per-turn role switching (multi-agent routing)
@@ -1219,6 +1544,7 @@ class AgentLoop:
             self._consolidation_tasks.add(_task)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
+        self._ensure_scratchpad(key)
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
@@ -1256,6 +1582,12 @@ class AgentLoop:
             initial_messages,
             on_progress=on_progress or _bus_progress,
         )
+
+        # Track per-role tool calls
+        if self._routing_metrics and tools_used and self.role_name:
+            self._routing_metrics.record(
+                role_tool_calls_key(self.role_name), len(tools_used)
+            )
 
         if final_content is None:
             final_content = self._build_no_answer_explanation(msg.content, all_msgs)
