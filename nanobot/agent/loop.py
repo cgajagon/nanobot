@@ -74,6 +74,18 @@ if TYPE_CHECKING:
     from nanobot.cron.service import CronService
 
 
+def _user_friendly_error(exc: Exception) -> str:
+    """Map exceptions to actionable user-facing messages."""
+    msg = str(exc).lower()
+    if "context_length" in msg or "context window" in msg or "maximum context" in msg:
+        return "Your conversation is too long. Use /new to start a fresh session."
+    if "rate_limit" in msg or "429" in msg or "quota" in msg:
+        return "I'm rate-limited right now. Please try again in a moment."
+    if "auth" in msg and ("invalid" in msg or "denied" in msg or "missing" in msg):
+        return "There's a configuration issue with the AI provider. Please contact the admin."
+    return "Sorry, I couldn't process that. Please try again."
+
+
 class AgentLoop:
     """
     The agent loop is the core processing engine.
@@ -157,6 +169,7 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = config.restrict_to_workspace
+        self.message_timeout = config.message_timeout
 
         self.context = ContextBuilder(
             self.workspace,
@@ -334,12 +347,16 @@ class AgentLoop:
             return None
         clean = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
         if not clean:
+            logger.warning(
+                "_strip_think removed all content from non-empty response (first 100 chars): {}",
+                text[:100],
+            )
             return None
         # Strip common reasoning prefixes that sometimes leak into final answers.
-        # Remove leading lines like "analysis", "assistantanalysis", etc.
+        # Remove leading lines like "analysis", "assistantanalysis", "analysisUser", etc.
         while True:
             stripped = re.sub(
-                r"^(assistant\s*)?analysis\b[^\n]*\n?", "", clean, flags=re.IGNORECASE
+                r"^(assistant\s*)?analysis[^\n]*\n?", "", clean, flags=re.IGNORECASE
             ).lstrip()
             if stripped == clean:
                 break
@@ -645,10 +662,84 @@ class AgentLoop:
                     break
                 await asyncio.sleep(min(2**consecutive_errors, 10))
                 continue
+
+            if response.finish_reason == "content_filter":
+                consecutive_errors += 1
+                logger.warning(
+                    "Content filter triggered (attempt {})", consecutive_errors
+                )
+                if consecutive_errors >= 2:
+                    final_content = (
+                        "The AI provider's content filter blocked my response. "
+                        "Try rephrasing your question."
+                    )
+                    messages = self.context.add_assistant_message(messages, final_content)
+                    break
+                await asyncio.sleep(1)
+                continue
+
+            if response.finish_reason == "length" and not response.content:
+                consecutive_errors += 1
+                logger.warning(
+                    "Response truncated to zero content (attempt {})", consecutive_errors
+                )
+                if consecutive_errors >= 2:
+                    final_content = (
+                        "My response was too long and got cut off. "
+                        "Try asking a more specific question."
+                    )
+                    messages = self.context.add_assistant_message(messages, final_content)
+                    break
+                await asyncio.sleep(1)
+                continue
+
             consecutive_errors = 0
 
             # --- ACT: execute tool calls -----------------------------------
             if response.has_tool_calls:
+                # Filter out malformed tool calls (empty name or empty arguments)
+                valid_calls = [
+                    tc for tc in response.tool_calls
+                    if tc.name and tc.name.strip() and tc.arguments
+                ]
+                skipped = len(response.tool_calls) - len(valid_calls)
+                if skipped:
+                    logger.warning(
+                        "Filtered {} malformed tool call(s) with empty name/arguments",
+                        skipped,
+                    )
+                if not valid_calls:
+                    # All calls were malformed — treat as empty response
+                    if not response.content and turn_tool_calls > 0 and not nudged_for_final:
+                        nudged_for_final = True
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    "Your previous tool calls were malformed (empty name or "
+                                    "arguments). Produce the final answer directly without "
+                                    "calling any more tools."
+                                ),
+                            }
+                        )
+                        continue
+                    final_content = self._strip_think(response.content)
+                    messages = self.context.add_assistant_message(
+                        messages,
+                        final_content,
+                        reasoning_content=response.reasoning_content,
+                    )
+                    break
+
+                # Replace with filtered list
+                response = LLMResponse(
+                    content=response.content,
+                    tool_calls=valid_calls,
+                    finish_reason=response.finish_reason,
+                    usage=response.usage,
+                    reasoning_content=response.reasoning_content,
+                )
+
                 if on_progress:
                     clean = self._strip_think(response.content)
                     if clean:
@@ -991,7 +1082,14 @@ class AgentLoop:
                         self._apply_role_for_turn(role)
                         role_applied = True
 
-                    response = await self._process_message(msg)
+                    # Wrap with timeout to prevent infinite processing
+                    timeout = self.message_timeout if self.message_timeout > 0 else None
+                    if timeout:
+                        response = await asyncio.wait_for(
+                            self._process_message(msg), timeout=timeout
+                        )
+                    else:
+                        response = await self._process_message(msg)
 
                     if role_applied:
                         self._reset_role_after_turn()
@@ -1007,6 +1105,25 @@ class AgentLoop:
                                 metadata=msg.metadata or {},
                             )
                         )
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Message processing timed out after {}s for {}:{}",
+                        self.message_timeout,
+                        msg.channel,
+                        msg.chat_id,
+                    )
+                    if role_applied:
+                        self._reset_role_after_turn()
+                    await self.bus.publish_outbound(
+                        OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=(
+                                "Sorry, I ran out of time processing your request. "
+                                "Try breaking it into smaller steps."
+                            ),
+                        )
+                    )
                 except Exception as e:
                     logger.error("Error processing message: {}", e)
                     if role_applied:
@@ -1015,7 +1132,7 @@ class AgentLoop:
                         OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            content=f"Sorry, I encountered an error: {str(e)}",
+                            content=_user_friendly_error(e),
                         )
                     )
             except asyncio.TimeoutError:
@@ -1374,6 +1491,65 @@ class AgentLoop:
         confidence = self._estimate_grounding_confidence(text)
         return confidence < self.memory_uncertainty_threshold
 
+    async def _attempt_recovery(
+        self,
+        msg: InboundMessage,
+        all_msgs: list[dict[str, Any]],
+    ) -> str | None:
+        """Try a single recovery LLM call with minimal context when the main loop produced None.
+
+        Uses only the system prompt and the original user message (no tool history)
+        with tools disabled to force a direct text answer.
+        """
+        # Extract the system prompt and the last user message from the conversation.
+        system_msg = next((m for m in all_msgs if m.get("role") == "system"), None)
+        user_msg = None
+        for m in reversed(all_msgs):
+            if m.get("role") == "user":
+                user_msg = m
+                break
+
+        if not system_msg or not user_msg:
+            logger.warning("Recovery skipped: missing system or user message")
+            return None
+
+        recovery_messages = [
+            system_msg,
+            user_msg,
+            {
+                "role": "system",
+                "content": (
+                    "Your previous attempt to answer did not produce a response. "
+                    "Answer the user's message directly without calling any tools. "
+                    "If you truly cannot answer, say what you know and suggest next steps."
+                ),
+            },
+        ]
+
+        logger.info("Attempting recovery LLM call for {}:{}", msg.channel, msg.chat_id)
+        try:
+            response = await self.provider.chat(
+                messages=recovery_messages,
+                tools=None,
+                model=self.model,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+            )
+        except Exception:
+            logger.warning("Recovery LLM call failed with exception")
+            return None
+
+        if response.finish_reason == "error":
+            logger.warning("Recovery LLM call returned error: {}", response.content)
+            return None
+
+        content = self._strip_think(response.content)
+        if content:
+            logger.info("Recovery succeeded, returning answer")
+        else:
+            logger.warning("Recovery LLM call produced no usable content")
+        return content
+
     @staticmethod
     def _build_no_answer_explanation(user_text: str, messages: list[dict[str, Any]]) -> str:
         """Explain why the agent could not produce an answer on this turn."""
@@ -1385,7 +1561,7 @@ class AgentLoop:
 
         reasons: list[str] = []
         if not tool_results:
-            reasons.append("I did not get usable evidence from tools or memory retrieval.")
+            reasons.append("The model did not produce a response for this message.")
         if "exit code: 1" in lowered or "no such file" in lowered or "not found" in lowered:
             reasons.append(
                 f"My last check with `{last_tool_name or 'a tool'}` returned no matching data."
@@ -1398,10 +1574,14 @@ class AgentLoop:
             reasons.append("The model returned no final answer text after tool execution.")
 
         question = (user_text or "").strip()
+        _question_words = {"who", "what", "when", "where", "why", "how", "is", "are", "can", "do"}
+        looks_like_question = "?" in question or (
+            question.split()[0].lower() in _question_words if question else False
+        )
         help_line = (
-            "Please share the fact directly and I can save it to memory."
-            if question
-            else "Please restate your question and I will retry with explicit verification."
+            "Please try rephrasing your question or asking again."
+            if looks_like_question
+            else "Please share the fact directly and I can save it to memory."
         )
 
         primary_reason = reasons[0]
@@ -1588,6 +1768,9 @@ class AgentLoop:
             self._routing_metrics.record(
                 role_tool_calls_key(self.role_name), len(tools_used)
             )
+
+        if final_content is None:
+            final_content = await self._attempt_recovery(msg, all_msgs)
 
         if final_content is None:
             final_content = self._build_no_answer_explanation(msg.content, all_msgs)

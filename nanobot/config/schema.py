@@ -273,6 +273,9 @@ class AgentConfig(Base):
     # Shell security (Step 11)
     shell_mode: str = "denylist"  # allowlist | denylist
 
+    # Per-message timeout (seconds); 0 = no timeout
+    message_timeout: int = 300
+
     # Tools
     restrict_to_workspace: bool = False
 

@@ -82,7 +82,7 @@ def _markdown_to_telegram_html(text: str) -> str:
     return text
 
 
-def _split_message(content: str, max_len: int = 4000) -> list[str]:
+def _split_message(content: str, max_len: int = 3800) -> list[str]:
     """Split content into chunks within max_len, preferring line breaks."""
     if len(content) <= max_len:
         return [content]
@@ -130,6 +130,7 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._streaming_msg_ids: dict[str, int] = {}  # chat_id -> msg_id for edit-in-place
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -230,7 +231,21 @@ class TelegramChannel(BaseChannel):
             logger.warning("Telegram bot not running")
             return
 
+        is_streaming = bool(msg.metadata.get("_streaming"))
+        is_progress = bool(msg.metadata.get("_progress"))
+
+        # For streaming progress, edit the existing message in-place
+        if is_streaming and is_progress and msg.content:
+            await self._send_streaming(msg)
+            return
+
+        # Non-streaming: clear streaming message and typing indicator
+        self._streaming_msg_ids.pop(msg.chat_id, None)
         self._stop_typing(msg.chat_id)
+
+        # Skip empty progress messages
+        if is_progress and not msg.content:
+            return
 
         try:
             chat_id = int(msg.chat_id)
@@ -284,9 +299,23 @@ class TelegramChannel(BaseChannel):
             for chunk in _split_message(msg.content):
                 try:
                     html = _markdown_to_telegram_html(chunk)
-                    await self._app.bot.send_message(
-                        chat_id=chat_id, text=html, parse_mode="HTML", reply_parameters=reply_params
-                    )
+                    # Safety check: re-split if HTML exceeds 4096 bytes
+                    if len(html.encode("utf-8")) > 4096:
+                        for sub in _split_message(chunk, max_len=2000):
+                            sub_html = _markdown_to_telegram_html(sub)
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=sub_html,
+                                parse_mode="HTML",
+                                reply_parameters=reply_params,
+                            )
+                    else:
+                        await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=html,
+                            parse_mode="HTML",
+                            reply_parameters=reply_params,
+                        )
                     sent_any = True
                 except Exception as e:
                     logger.warning("HTML parse failed, falling back to plain text: {}", e)
@@ -304,6 +333,52 @@ class TelegramChannel(BaseChannel):
         if has_payload and not sent_any:
             err = f": {last_error}" if last_error else ""
             raise RuntimeError(f"Telegram delivery failed{err}")
+
+    async def _send_streaming(self, msg: OutboundMessage) -> None:
+        """Edit-in-place streaming: update a single message as tokens arrive."""
+        try:
+            chat_id = int(msg.chat_id)
+        except ValueError:
+            return
+
+        html = _markdown_to_telegram_html(msg.content)
+        # Telegram messages must be non-empty and <=4096 bytes
+        if not html.strip():
+            return
+        if len(html.encode("utf-8")) > 4096:
+            html = html[: 4000]  # truncate rather than error on streaming preview
+
+        existing_msg_id = self._streaming_msg_ids.get(msg.chat_id)
+
+        if existing_msg_id:
+            # Edit the existing streaming message
+            try:
+                await self._app.bot.edit_message_text(  # type: ignore[union-attr]
+                    chat_id=chat_id,
+                    message_id=existing_msg_id,
+                    text=html,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                # "message is not modified" is fine — content hasn't changed yet
+                if "not modified" in err_str:
+                    return
+                # Message deleted or other issue — send a new one
+                logger.debug("Failed to edit streaming message: {}", e)
+                self._streaming_msg_ids.pop(msg.chat_id, None)
+
+        # Send a new streaming message and track its ID
+        try:
+            sent = await self._app.bot.send_message(  # type: ignore[union-attr]
+                chat_id=chat_id,
+                text=html,
+                parse_mode="HTML",
+            )
+            self._streaming_msg_ids[msg.chat_id] = sent.message_id
+        except Exception as e:
+            logger.debug("Failed to send streaming message: {}", e)
 
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""

@@ -257,7 +257,7 @@ class LiteLLMProvider(LLMProvider):
 
                 tool_calls.append(
                     ToolCallRequest(
-                        id=tc.id,
+                        id=tc.id[:40] if tc.id else tc.id,
                         name=tc.function.name,
                         arguments=args,
                     )
@@ -393,7 +393,7 @@ class LiteLLMProvider(LLMProvider):
                             args = {}
                         tool_calls.append(
                             ToolCallRequest(
-                                id=frag["id"],
+                                id=frag["id"][:40],
                                 name=frag["name"],
                                 arguments=args if isinstance(args, dict) else {},
                             )
