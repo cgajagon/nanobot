@@ -80,7 +80,7 @@ from nanobot.bus.events import DeliveryResult, InboundMessage, OutboundMessage, 
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentConfig, AgentRoleConfig, ExecToolConfig
 from nanobot.providers.base import LLMProvider
-from nanobot.session.manager import Session, SessionManager
+from nanobot.session.manager import SessionManager
 
 if TYPE_CHECKING:
     from nanobot.agent.coordinator import ClassificationResult, Coordinator
@@ -937,41 +937,6 @@ class AgentLoop:
         return await self._processor._process_message(
             msg, session_key=session_key, on_progress=on_progress
         )
-
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results.
-
-        Ephemeral system messages (reflect, progress, self-check, delegation
-        nudges) injected during the tool loop are **not** persisted — they are
-        loop-control signals that would pollute conversation history and cause
-        the LLM to infer false workflow patterns on future turns.
-        """
-
-        max_chars = self.config.tool_result_max_chars
-        for m in messages[skip:]:
-            if m.get("role") == "system":
-                continue  # ephemeral loop-control prompt — do not persist
-            entry = {k: v for k, v in m.items() if k != "reasoning_content"}
-            if entry.get("role") == "tool" and isinstance(entry.get("content"), str):
-                content = entry["content"]
-                if len(content) > max_chars:
-                    entry["content"] = content[:max_chars] + "\n... (truncated)"
-            entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
-            session.messages.append(entry)
-        session.updated_at = datetime.now(timezone.utc)
-
-    async def _consolidate_memory(self, session: Session, archive_all: bool = False) -> bool:
-        """Delegate to ConsolidationOrchestrator."""
-        if archive_all:
-            return await self._consolidator.consolidate_and_wait(
-                session.key,
-                session,
-                self.provider,
-                self.model,
-                archive_all=True,
-            )
-        self._consolidator.submit(session.key, session, self.provider, self.model)
-        return True
 
     async def process_direct(
         self,
