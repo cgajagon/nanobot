@@ -218,6 +218,8 @@ class AgentLoop:
         self.memory = MemoryStore(
             self.workspace,
             rollout_overrides=self.memory_rollout_overrides,
+            section_weights={k: v.model_dump() for k, v in config.memory_section_weights.items()}
+            or None,
         )
         self.context = ContextBuilder(
             self.workspace,

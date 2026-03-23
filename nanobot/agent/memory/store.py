@@ -89,6 +89,7 @@ class MemoryStore:
         *,
         embedding_provider: str | None = None,
         vector_backend: str | None = None,
+        section_weights: dict[str, dict[str, float]] | None = None,
     ):
         self.workspace = workspace
         self.persistence = MemoryPersistence(workspace)
@@ -126,8 +127,9 @@ class MemoryStore:
         # Retrieval planner (LAN-207) — intent classification + policy + routing.
         self._planner = RetrievalPlanner()
 
-        # TODO: pass config.memory_section_weights when MemoryStore receives config
-        self._budget_allocator = TokenBudgetAllocator(DEFAULT_SECTION_WEIGHTS)
+        self._budget_allocator = TokenBudgetAllocator(
+            section_weights if section_weights else DEFAULT_SECTION_WEIGHTS
+        )
 
         # Context assembler (LAN-210) — prompt rendering extracted from MemoryStore.
         self._assembler = ContextAssembler(
