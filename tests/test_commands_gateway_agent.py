@@ -259,3 +259,342 @@ def test_agent_single_message_and_interactive_exit(
     interactive = runner.invoke(app, ["agent", "--session", "cli:direct", "--timeout", "0"])
     assert interactive.exit_code == 0
     assert "Interactive mode" in interactive.stdout
+
+
+def test_agent_single_message_logs_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Agent single-message with --logs flag uses nullcontext (no spinner)."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+
+    class _Timer:
+        def __init__(self, *_args, **_kwargs):
+            self.daemon = True
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    monkeypatch.setattr("threading.Timer", _Timer)
+
+    result = runner.invoke(app, ["agent", "-m", "hello", "--logs", "--timeout", "1"])
+    assert result.exit_code == 0
+
+
+def test_agent_interactive_session_id_without_colon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode with a session ID that has no colon uses 'cli' as channel."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    async def _read_exit():
+        return "exit"
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _read_exit)
+
+    result = runner.invoke(app, ["agent", "--session", "mysession", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert "Interactive mode" in result.stdout
+
+
+def test_agent_interactive_empty_input_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode skips empty input and continues."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    call_count = {"n": 0}
+
+    async def _read_then_exit():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "   "  # empty/whitespace
+        return "exit"
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _read_then_exit)
+
+    result = runner.invoke(app, ["agent", "--session", "cli:direct", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert call_count["n"] == 2  # called twice: empty, then exit
+
+
+def test_agent_interactive_eof_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Interactive mode handles EOFError (Ctrl+D) by exiting cleanly."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    async def _raise_eof():
+        raise EOFError
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _raise_eof)
+
+    result = runner.invoke(app, ["agent", "--session", "cli:direct", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert "Goodbye" in result.stdout
+
+
+def test_agent_single_message_no_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Agent single-message with --timeout 0 skips watchdog timer."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+
+    result = runner.invoke(app, ["agent", "-m", "hi", "--timeout", "0"])
+    assert result.exit_code == 0
+
+
+def test_agent_interactive_sends_message_and_gets_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode sends a message through the bus and prints the response."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    call_count = {"n": 0}
+
+    async def _read_input():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "hello agent"
+        return "exit"
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _read_input)
+
+    # Bus that returns a response after receiving an inbound message
+    class _ResponsiveBus:
+        def __init__(self):
+            self._inbound_received = asyncio.Event()
+            self._response_sent = False
+
+        async def publish_inbound(self, msg):
+            self._inbound_received.set()
+
+        async def consume_outbound(self):
+            # Wait for an inbound message, then respond once
+            await self._inbound_received.wait()
+            if not self._response_sent:
+                self._response_sent = True
+                return SimpleNamespace(content="agent reply", metadata={})
+            # After responding, return slowly so the outbound consumer doesn't spin
+            await asyncio.sleep(5)
+            return SimpleNamespace(content="", metadata={})
+
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _ResponsiveBus)
+
+    class _RunAgentLoop(_AgentLoop):
+        async def run(self):
+            # Simulate agent loop running briefly
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _RunAgentLoop)
+
+    result = runner.invoke(app, ["agent", "--session", "cli:test", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert "Interactive mode" in result.stdout
+    assert "agent reply" in result.stdout
+
+
+def test_agent_interactive_progress_messages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode displays progress messages from the bus."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    call_count = {"n": 0}
+
+    async def _read_input():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "do something"
+        # Give time for progress messages to be consumed
+        await asyncio.sleep(0.1)
+        return "exit"
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _read_input)
+
+    # Bus that sends a progress message then a final response
+    class _ProgressBus:
+        def __init__(self):
+            self._inbound_received = asyncio.Event()
+            self._msg_index = 0
+
+        async def publish_inbound(self, msg):
+            self._inbound_received.set()
+
+        async def consume_outbound(self):
+            await self._inbound_received.wait()
+            self._msg_index += 1
+            if self._msg_index == 1:
+                return SimpleNamespace(content="Searching files...", metadata={"_progress": True})
+            if self._msg_index == 2:
+                return SimpleNamespace(content="done result", metadata={})
+            await asyncio.sleep(5)
+            return SimpleNamespace(content="", metadata={})
+
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _ProgressBus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+
+    result = runner.invoke(app, ["agent", "--session", "cli:test", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert "Searching files" in result.stdout
+
+
+def test_agent_interactive_tool_hint_suppressed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode suppresses tool hints when channels_config disables them."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    call_count = {"n": 0}
+
+    async def _read_input():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "query"
+        await asyncio.sleep(0.1)
+        return "exit"
+
+    monkeypatch.setattr("nanobot.cli.agent._read_interactive_input_async", _read_input)
+
+    class _NoHintsAgentLoop(_AgentLoop):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            # Disable tool hints
+            self.channels_config = SimpleNamespace(send_tool_hints=False, send_progress=True)
+
+    # Bus that sends a tool hint progress, then a regular progress, then response
+    class _HintBus:
+        def __init__(self):
+            self._inbound_received = asyncio.Event()
+            self._msg_index = 0
+
+        async def publish_inbound(self, msg):
+            self._inbound_received.set()
+
+        async def consume_outbound(self):
+            await self._inbound_received.wait()
+            self._msg_index += 1
+            if self._msg_index == 1:
+                # Tool hint that should be suppressed
+                return SimpleNamespace(
+                    content="Using read_file...",
+                    metadata={"_progress": True, "_tool_hint": True},
+                )
+            if self._msg_index == 2:
+                # Regular progress that should be shown
+                return SimpleNamespace(content="Analyzing...", metadata={"_progress": True})
+            if self._msg_index == 3:
+                return SimpleNamespace(content="final answer", metadata={})
+            await asyncio.sleep(5)
+            return SimpleNamespace(content="", metadata={})
+
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _HintBus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _NoHintsAgentLoop)
+
+    result = runner.invoke(app, ["agent", "--session", "cli:test", "--timeout", "0"])
+    assert result.exit_code == 0
+    # Tool hint should be suppressed
+    assert "read_file" not in result.stdout
+    # Regular progress should be shown
+    assert "Analyzing" in result.stdout
+
+
+def test_agent_interactive_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Interactive mode handles KeyboardInterrupt by exiting with Goodbye."""
+    cfg = Config()
+    cfg.agents.defaults.workspace = str(tmp_path)
+
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda: cfg)
+    monkeypatch.setattr("nanobot.config.loader.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.agent._make_provider", lambda _cfg: object())
+    monkeypatch.setattr("nanobot.bus.queue.MessageBus", _Bus)
+    monkeypatch.setattr("nanobot.agent.loop.AgentLoop", _AgentLoop)
+    monkeypatch.setattr("nanobot.cron.service.CronService", _CronService)
+    monkeypatch.setattr("nanobot.cli.agent._init_prompt_session", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._flush_pending_tty_input", lambda: None)
+    monkeypatch.setattr("nanobot.cli.agent._restore_terminal", lambda: None)
+
+    async def _raise_keyboard_interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        "nanobot.cli.agent._read_interactive_input_async", _raise_keyboard_interrupt
+    )
+
+    result = runner.invoke(app, ["agent", "--session", "cli:direct", "--timeout", "0"])
+    assert result.exit_code == 0
+    assert "Goodbye" in result.stdout
