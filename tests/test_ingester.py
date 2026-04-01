@@ -324,6 +324,68 @@ class TestDefaultTopicForEventType:
         assert EventClassifier.default_topic_for_event_type("unknown") == "general"
 
 
+class TestAppendEventsEmbeddings:
+    """Tests for embeddings parameter forwarding in append_events."""
+
+    def test_append_events_passes_embeddings_to_insert(self, tmp_path: Path) -> None:
+        """Embeddings dict is forwarded through _write_events to insert_event."""
+        db = MagicMock()
+        db.insert_event = MagicMock()
+        db.get_event_by_id = MagicMock(return_value=None)
+        coercer = MagicMock()
+        coercer.coerce_event = MagicMock(side_effect=lambda item, **kw: item)
+        coercer.ensure_event_provenance = MagicMock(side_effect=lambda item: item)
+        coercer.build_event_id = MagicMock(return_value="test-embed-001")
+        dedup = MagicMock()
+        dedup.find_semantic_duplicate = MagicMock(return_value=(None, 0.0))
+        ingester = EventIngester(coercer=coercer, dedup=dedup, graph=None, db=db)
+        ingester._find_dedup_candidates = MagicMock(return_value=[])
+
+        event = MemoryEvent(
+            id="test-embed-001",
+            type="fact",
+            summary="User likes Python",
+            timestamp="2026-04-01T00:00:00+00:00",
+        )
+        vec = [0.1] * 384
+        embeddings = {"test-embed-001": vec}
+
+        ingester.append_events([event], embeddings=embeddings)
+
+        calls = db.insert_event.call_args_list
+        assert len(calls) >= 1
+        _, kwargs = calls[0]
+        assert kwargs.get("embedding") == vec
+
+    def test_append_events_without_embeddings_passes_none(self, tmp_path: Path) -> None:
+        """Without embeddings param, insert_event gets embedding=None."""
+        db = MagicMock()
+        db.insert_event = MagicMock()
+        db.get_event_by_id = MagicMock(return_value=None)
+        coercer = MagicMock()
+        coercer.coerce_event = MagicMock(side_effect=lambda item, **kw: item)
+        coercer.ensure_event_provenance = MagicMock(side_effect=lambda item: item)
+        coercer.build_event_id = MagicMock(return_value="test-no-embed")
+        dedup = MagicMock()
+        dedup.find_semantic_duplicate = MagicMock(return_value=(None, 0.0))
+        ingester = EventIngester(coercer=coercer, dedup=dedup, graph=None, db=db)
+        ingester._find_dedup_candidates = MagicMock(return_value=[])
+
+        event = MemoryEvent(
+            id="test-no-embed",
+            type="fact",
+            summary="User likes Rust",
+            timestamp="2026-04-01T00:00:00+00:00",
+        )
+
+        ingester.append_events([event])
+
+        calls = db.insert_event.call_args_list
+        assert len(calls) >= 1
+        _, kwargs = calls[0]
+        assert kwargs.get("embedding") is None
+
+
 class TestIngesterWithDB:
     """Tests for ingester writing to MemoryDatabase."""
 
