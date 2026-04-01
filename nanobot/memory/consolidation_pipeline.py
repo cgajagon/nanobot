@@ -21,6 +21,7 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from nanobot.memory.db.connection import MemoryDatabase
+    from nanobot.memory.embedder import Embedder
 
 from nanobot.context.prompt_loader import prompts
 from nanobot.observability.tracing import bind_trace
@@ -54,6 +55,7 @@ class ConsolidationPipeline:
         conflict_mgr: ConflictManager,
         snapshot: MemorySnapshot,
         db: MemoryDatabase,
+        embedder: Embedder | None = None,
         rollout: dict[str, Any] | None = None,
     ) -> None:
         self._extractor = extractor
@@ -62,7 +64,30 @@ class ConsolidationPipeline:
         self._conflict_mgr = conflict_mgr
         self._snapshot = snapshot
         self._db = db
+        self._embedder = embedder
         self._rollout: dict[str, Any] = rollout or {}
+
+    # ------------------------------------------------------------------
+    # Embedding helper
+    # ------------------------------------------------------------------
+
+    async def _compute_embeddings(
+        self,
+        events: list[MemoryEvent],
+    ) -> dict[str, list[float]] | None:
+        """Compute embedding vectors for events. Returns None on failure."""
+        if not self._embedder or not self._embedder.available or not events:
+            return None
+        try:
+            summaries = [e.summary for e in events]
+            ids = [e.id for e in events if e.id]
+            if not ids:
+                return None
+            vectors = await self._embedder.embed_batch(summaries)
+            return dict(zip(ids, vectors))
+        except Exception:  # crash-barrier: embedding failure must not block ingestion
+            logger.warning("Embedding failed during consolidation, using FTS-only")
+            return None
 
     # ------------------------------------------------------------------
     # Helper methods
@@ -218,7 +243,8 @@ class ConsolidationPipeline:
             )
 
         # -- Apply results (same as two-call path) --
-        events_written = self._ingester.append_events(events)
+        embeddings = await self._compute_embeddings(events)
+        events_written = self._ingester.append_events(events, embeddings=embeddings)
         await self._ingester.ingest_graph_triples(events)
 
         event_ids = [e.id for e in events if e.id]
