@@ -507,7 +507,7 @@ Query arrives
 |  +- FTS5 keyword search (OR prefix matching: "term1* OR term2* OR ...")
 |
 +- 4. RRF fusion (k=60, vector_weight=0.7, fts_weight=0.3)
-|     [stored in item["_rrf_score"] — controls candidate selection only]
+|     [stored in item["score"] and item["_rrf_score"]]
 |
 +- 5. Fallback to read_events(limit=candidate_k) if fusion returns empty
 |
@@ -521,7 +521,7 @@ Query arrives
 |  |   reflection type filtered out for non-reflection intents
 |  +- Reflection safety: no evidence_refs -> filtered out
 |
-+- 8. Scoring (all additive from base 0.0)
++- 8. Scoring (additive on RRF base_score)
 |  +- Profile adjustments:
 |  |  +- resolved_keep_new_old: -0.18
 |  |  +- resolved_keep_new_new: +0.12
@@ -534,7 +534,6 @@ Query arrives
 |  |  +- stability_boost: high +0.03, medium +0.01, low -0.02
 |  |  +- reflection_penalty: -0.06 (when recency-weighted)
 |  +- Graph entity match boost: +0.15
-|  [NOTE: base_score is always 0.0 — RRF score is NOT carried forward]
 |
 +- 9. Cross-encoder reranking (enabled | shadow | disabled)
 |  +- CompositeReranker: lexical(0.30) + entity(0.20) + bm25(0.25) +
@@ -549,9 +548,7 @@ Query arrives
 +- 11. Convert to RetrievedMemory typed objects
 ```
 
-**Note on recency formulas:** The pipeline uses two different decay formulas:
-- `RetrievalPlanner.recency_signal`: true half-life `exp(-ln(2) × age / half_life)` — value = 0.5 at exactly `half_life` days
-- `CompositeReranker._recency_score`: simple exponential `exp(-age / half_life)` — value ≈ 0.37 at `half_life` days (faster decay)
+**Recency decay:** Both stages use true half-life: `exp(-ln(2) × age / half_life)`. Value = 0.5 at exactly `half_life` days.
 
 ### Per-Intent Retrieval Policy
 

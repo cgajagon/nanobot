@@ -431,11 +431,7 @@ Query text
 │  Stage 4: RRF FUSION                                 │
 │  score(doc) = Σ weight_i / (60 + rank_i)            │
 │  vector_weight=0.7, fts_weight=0.3                   │
-│  Stored in item["_rrf_score"]                        │
-│                                                      │
-│  NOTE: _rrf_score controls candidate selection only. │
-│  It is NOT carried into the scoring stage.           │
-│  base_score is always 0.0 in the unified path.       │
+│  Stored in item["score"] and item["_rrf_score"]      │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
@@ -452,7 +448,7 @@ Query text
                             │
 ┌───────────────────────────▼─────────────────────────┐
 │  Stage 7: SCORE                                      │
-│  score = 0.0 (base)                                  │
+│  score = RRF base_score                               │
 │         + profile_adjustment (±0.20 max)             │
 │         + type_boost (per intent, ±0.30)             │
 │         + 0.08 × recency (half-life decay)           │
@@ -798,20 +794,11 @@ PK lookup + FTS5 pre-filtering. Missing indexes on `events` and `edges` tables a
 | Encapsulation leak | `retriever.py` line 136 | Accesses `_graph_aug._read_events_fn` — private attribute of collaborator |
 | `compute_rank_delta` result discarded | `scoring.py` lines 410-412 | Shadow mode computes delta but never logs or stores it |
 | Snapshot rebuild discarded | `profile_correction.py` | `rebuild_memory_snapshot(write=False)` result not captured |
-| Two different recency decay formulas | `retrieval_planner.py` vs `reranker.py` | True half-life vs simple exponential — inconsistent behavior |
 | `EventStore.search_by_metadata` naming | `event_store.py` | `memory_type` parameter filters on `type` column, not memory_type |
 | Schema coupling via reference | `constants.py` | `_CONSOLIDATE_MEMORY_TOOL` shares sub-schema objects with `_SAVE_EVENTS_TOOL` by Python reference |
 | Backward-compat naming | `conflicts.py` line 77 | `profile_mgr` attribute name documented as backward-compat (violates prohibited-patterns) |
 | `_norm` duplication | `graph.py` + `graph_traversal.py` | Same function defined in two files |
 | `_db` in Protocol | `graph_traversal.py` | `_KnowledgeGraphProtocol` exposes private attribute in interface |
-
-### RRF Score Not Carried to Final Ranking
-
-`_fuse_results()` stores the RRF score in `item["_rrf_score"]`. `score_items()` reads
-`item.get("score", 0.0)` as `base_score`. Since neither `search_vector` nor `search_fts`
-sets a `"score"` key, `base_score` is always `0.0`. RRF controls which candidates enter
-the pipeline (up to `candidate_k`) but contributes zero to the final numeric score.
-Whether this is intentional design or an accidental null-base is undocumented.
 
 ---
 
