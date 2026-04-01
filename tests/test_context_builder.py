@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.context.context import ContextBuilder
+from nanobot.memory.constants import STRATEGIES_DDL
 from nanobot.memory.store import MemoryStore
+from nanobot.memory.strategy import Strategy, StrategyAccess
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -148,3 +152,101 @@ def test_injected_memory_store_is_used(tmp_path: Path) -> None:
     mock_store = MagicMock(spec=MemoryStore)
     builder = ContextBuilder(ws, memory=mock_store)
     assert builder.memory is mock_store
+
+
+# ---------------------------------------------------------------------------
+# Strategy tracking and directive formatting tests
+# ---------------------------------------------------------------------------
+
+
+def _make_strategy_store_with_data() -> StrategyAccess:
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(STRATEGIES_DDL)
+    store = StrategyAccess(conn)
+    now = datetime.now(timezone.utc)
+    store.save(
+        Strategy(
+            id="s1",
+            domain="obsidian",
+            task_type="empty_recovery:obsidian_search",
+            strategy=(
+                "WHEN: looking up a project code in Obsidian\n"
+                "DON'T: obsidian search (only matches file content, not folder names)\n"
+                "DO: obsidian vault → browse by folder name"
+            ),
+            context="Learned from guardrail recovery",
+            source="guardrail_recovery",
+            confidence=0.7,
+            created_at=now,
+            last_used=now,
+            use_count=3,
+            success_count=2,
+        )
+    )
+    return store
+
+
+@pytest.mark.asyncio
+async def test_strategy_section_uses_directive_formatting(tmp_path: Path) -> None:
+    """Strategy section must use directive language and warning markers."""
+    ws = _workspace(tmp_path)
+    store = _make_strategy_store_with_data()
+    builder = ContextBuilder(ws, strategy_store=store)
+    prompt = await builder.build_system_prompt()
+
+    assert "# Tool-Use Rules (from past sessions)" in prompt
+    assert "Follow them before choosing tools." in prompt
+    assert "\u26a0\ufe0f" in prompt  # ⚠️ warning marker
+    assert "confidence: 70%" in prompt
+    # Old weak formatting must NOT appear
+    assert "Apply them when relevant" not in prompt
+    assert "# Relevant Strategies" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_last_loaded_strategies_tracks_loaded(tmp_path: Path) -> None:
+    """ContextBuilder.last_loaded_strategies returns strategies from last prompt build."""
+    ws = _workspace(tmp_path)
+    store = _make_strategy_store_with_data()
+    builder = ContextBuilder(ws, strategy_store=store)
+
+    assert builder.last_loaded_strategies == []
+    await builder.build_system_prompt()
+    loaded = builder.last_loaded_strategies
+    assert len(loaded) == 1
+    assert loaded[0].id == "s1"
+    assert loaded[0].domain == "obsidian"
+
+
+@pytest.mark.asyncio
+async def test_no_strategies_section_when_store_empty(tmp_path: Path) -> None:
+    """No strategy section when store has no strategies above threshold."""
+    ws = _workspace(tmp_path)
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(STRATEGIES_DDL)
+    store = StrategyAccess(conn)
+    builder = ContextBuilder(ws, strategy_store=store)
+    prompt = await builder.build_system_prompt()
+
+    assert "Tool-Use Rules" not in prompt
+    assert builder.last_loaded_strategies == []
+
+
+@pytest.mark.asyncio
+async def test_last_loaded_strategies_resets_on_retrieval_failure(tmp_path: Path) -> None:
+    """last_loaded_strategies is reset to [] when retrieval raises."""
+    ws = _workspace(tmp_path)
+    store = _make_strategy_store_with_data()
+    builder = ContextBuilder(ws, strategy_store=store)
+
+    # Populate from a successful build first
+    await builder.build_system_prompt()
+    assert len(builder.last_loaded_strategies) == 1
+
+    # Simulate a broken store on the next call
+    broken_store = MagicMock()
+    broken_store.retrieve.side_effect = RuntimeError("db gone")
+    builder._strategy_store = broken_store
+
+    await builder.build_system_prompt()
+    assert builder.last_loaded_strategies == []
