@@ -433,3 +433,66 @@ async def span(
     except Exception:  # crash-barrier: tracing must never break the agent
         logger.opt(exception=True).warning("Langfuse span failed")
         yield None
+
+
+@contextlib.asynccontextmanager
+async def generation_span(
+    *,
+    name: str,
+    model: str | None = None,
+    model_parameters: dict[str, Any] | None = None,
+) -> AsyncIterator[Any]:
+    """Create a Langfuse GENERATION observation for an LLM call.
+
+    Yields the observation object (or ``None`` when disabled).
+    The caller should call ``obs.update(output=..., usage_details=...)``
+    before exiting to record the response and token counts.
+
+    Unlike ``tool_span`` and ``span``, this creates a GENERATION-type
+    observation that Langfuse renders with model/token/cost tracking.
+    """
+    if not _enabled or _client is None:
+        yield None
+        return
+
+    try:
+        kwargs: dict[str, Any] = {"name": name, "as_type": "generation"}
+        if model is not None:
+            kwargs["model"] = model
+        if model_parameters is not None:
+            kwargs["model_parameters"] = model_parameters
+        with _client.start_as_current_observation(**kwargs) as obs:
+            yield obs
+    except Exception:  # crash-barrier: tracing must never break the agent
+        logger.opt(exception=True).warning("Langfuse generation_span failed")
+        yield None
+
+
+@contextlib.asynccontextmanager
+async def retriever_span(
+    *,
+    name: str,
+    input: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> AsyncIterator[Any]:
+    """Create a Langfuse RETRIEVER observation for a RAG retrieval operation.
+
+    Yields the observation object (or ``None`` when disabled).
+    The caller should call ``obs.update(output=..., metadata=...)``
+    before exiting.
+    """
+    if not _enabled or _client is None:
+        yield None
+        return
+
+    try:
+        with _client.start_as_current_observation(
+            name=name,
+            as_type="retriever",
+            input=input,
+            metadata=metadata,
+        ) as obs:
+            yield obs
+    except Exception:  # crash-barrier: tracing must never break the agent
+        logger.opt(exception=True).warning("Langfuse retriever_span failed")
+        yield None
