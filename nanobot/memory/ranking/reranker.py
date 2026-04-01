@@ -116,13 +116,16 @@ def _entity_overlap(query_tokens: set[str], entities: list[str]) -> float:
 
 
 def _recency_score(timestamp_str: str, half_life: float = _RECENCY_HALF_LIFE_DAYS) -> float:
-    """Exponential decay: ``exp(-days_old / half_life)``."""
+    """True half-life decay: ``exp(-ln(2) * days_old / half_life)``.
+
+    Returns 0.5 at exactly ``half_life`` days.
+    """
     if not timestamp_str:
         return 0.0
     try:
         ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
         days_old = max((datetime.now(timezone.utc) - ts).total_seconds() / 86400.0, 0.0)
-        return math.exp(-days_old / half_life)
+        return math.exp(-math.log(2) * days_old / half_life)
     except (ValueError, TypeError):
         return 0.0
 

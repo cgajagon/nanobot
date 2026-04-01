@@ -6,7 +6,18 @@ from datetime import datetime, timezone
 from typing import Any
 
 from nanobot.memory.ranking.onnx_reranker import OnnxCrossEncoderReranker
-from nanobot.memory.ranking.reranker import CompositeReranker, Reranker
+from nanobot.memory.ranking.reranker import CompositeReranker, Reranker, _recency_score
+
+
+def test_recency_score_true_half_life() -> None:
+    """Value at exactly half_life days must be 0.5 (true half-life)."""
+    half_life = 30.0
+    from datetime import timedelta
+
+    ts = (datetime.now(timezone.utc) - timedelta(days=half_life)).isoformat()
+    score = _recency_score(ts, half_life=half_life)
+    assert abs(score - 0.5) < 0.02, f"Expected ~0.5 at half_life, got {score}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
