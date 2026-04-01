@@ -40,7 +40,7 @@ from nanobot.observability.tracing import bind_trace
 if TYPE_CHECKING:
     from nanobot.config.memory import MemoryConfig
     from nanobot.memory.store import MemoryStore
-    from nanobot.memory.strategy import StrategyAccess
+    from nanobot.memory.strategy import Strategy, StrategyAccess
 
 # ---------------------------------------------------------------------------
 # Module-level platform info cache — avoid repeated syscalls on every LLM
@@ -75,11 +75,17 @@ class ContextBuilder:
         self._strategy_store = strategy_store
         self.skills = SkillsLoader(workspace)
         self._contacts_context: str = ""
+        self._last_loaded_strategies: list[Strategy] = []
         self._unavailable_tools_fn: Callable[[], str] | None = None
         # P-03: mtime-keyed cache for bootstrap files — avoids re-reading static
         # workspace files on every LLM iteration within the same agent turn.
         self._bootstrap_cache: str | None = None
         self._bootstrap_cache_mtimes: dict[str, float] = {}
+
+    @property
+    def last_loaded_strategies(self) -> list[Strategy]:
+        """Strategies loaded into the most recent system prompt build."""
+        return self._last_loaded_strategies
 
     def set_unavailable_tools_fn(self, fn: Callable[[], str]) -> None:
         """Register a callback that returns the unavailable-tools summary."""
@@ -118,28 +124,29 @@ class ContextBuilder:
         # Tool guide — when and how to use tools
         parts.append(prompts.get("tool_guide"))
 
-        # Procedural memory — learned strategies from past sessions
+        # Procedural memory — learned tool-use rules from past sessions
         if self._strategy_store is not None:
             try:
                 strategies = self._strategy_store.retrieve(
                     limit=5,
                     min_confidence=0.3,
                 )
+                self._last_loaded_strategies = strategies
                 if strategies:
-                    lines = ["# Relevant Strategies\n"]
+                    lines = ["# Tool-Use Rules (from past sessions)\n"]
                     lines.append(
-                        "These strategies were learned from past sessions. "
-                        "Apply them when relevant.\n"
+                        "These rules correct known failure patterns. "
+                        "Follow them before choosing tools.\n"
                     )
                     for s in strategies:
                         lines.append(
-                            f"**{s.domain} / {s.task_type}** "
-                            f"(confidence: {s.confidence:.0%}, used {s.use_count}x)\n"
-                            f"{s.strategy}\n"
+                            f"\u26a0\ufe0f {s.strategy}\n"
+                            f"  [confidence: {s.confidence:.0%}, applied {s.use_count}x]\n"
                         )
                     parts.append("\n".join(lines))
             except Exception:  # crash-barrier: procedural memory is best-effort
                 logger.warning("Procedural memory retrieval failed; continuing without strategies")
+                self._last_loaded_strategies = []
 
         # Bootstrap files
         bootstrap = self._load_bootstrap_files()
