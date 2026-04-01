@@ -44,11 +44,3 @@ def resolve_alias(name: str) -> str:
     Returns the original name (stripped) if no alias is registered.
     """
     return _ALIAS_MAP.get(name.strip().lower(), name.strip())
-
-
-def register_alias(alias: str, canonical: str) -> None:
-    """Add a runtime alias mapping (e.g. from profile data).
-
-    Overwrites any existing entry for the same alias key.
-    """
-    _ALIAS_MAP[alias.strip().lower()] = canonical.strip()

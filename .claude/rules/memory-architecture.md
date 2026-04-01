@@ -776,16 +776,16 @@ PK lookup + FTS5 pre-filtering. Missing indexes on `events` and `edges` tables a
 
 | Item | Location | Notes |
 |------|----------|-------|
-| `vector_backend` parameter | `MemoryStore.__init__` | Accepted but never read |
+| `vector_backend` parameter | `MemoryStore.__init__` | **Removed** |
 | `embedding_provider` parameter | `MemoryRetriever.retrieve()` | Accepted but never used |
 | `recency_half_life_days` parameter | `MemoryRetriever.retrieve()` | Accepted but never forwarded |
 | `EventIngester._embedder` | `ingester.py` | Stored but unused; embeddings always `None` |
 | `ConflictManager._db` | `conflicts.py` | Stored but never used in any method |
-| `MemoryExtractor.last_extraction_source` | `extractor.py` | Set but never read externally |
+| `MemoryExtractor.last_extraction_source` | `extractor.py` | **Removed** |
 | `EventClassifier.distill_semantic_summary` | `classification.py` | Defined but never called in write path |
 | `is_mixed` return from `classify_memory_type` | `classification.py` | Always discarded by callers |
-| `register_alias()` | `entity_linker.py` | Never called anywhere in codebase |
-| `_keywords.py` module | `graph/_keywords.py` | Entire module dead; `_extract_query_keywords` never imported |
+| `register_alias()` | `entity_linker.py` | **Removed** |
+| `_keywords.py` module | `graph/_keywords.py` | **Removed** |
 | `_backend_stats_for_eval()` | `maintenance.py` | Returns hardcoded zeros |
 | `reindex_from_structured_memory()` | `maintenance.py` | Returns hardcoded success without doing work |
 
