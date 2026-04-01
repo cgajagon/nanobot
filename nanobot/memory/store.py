@@ -239,6 +239,7 @@ class MemoryStore:
             coercer=self._coercer,
             conflict_mgr=self.conflict_mgr,
             snapshot=self.snapshot,
+            embedder=self._embedder,
         )
         self.profile_mgr.set_corrector(self._corrector)
 
@@ -250,6 +251,7 @@ class MemoryStore:
             conflict_mgr=self.conflict_mgr,
             snapshot=self.snapshot,
             db=self.db,
+            embedder=self._embedder,
         )
 
     # ------------------------------------------------------------------

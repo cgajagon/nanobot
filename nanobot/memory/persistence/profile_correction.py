@@ -13,6 +13,7 @@ from ..constants import CONFLICT_STATUS_OPEN, PROFILE_STATUS_ACTIVE, PROFILE_STA
 from ..event import MemoryEvent
 
 if TYPE_CHECKING:
+    from ..embedder import Embedder
     from ..write.coercion import EventCoercer
     from ..write.conflicts import ConflictManager
     from ..write.extractor import MemoryExtractor
@@ -37,6 +38,7 @@ class CorrectionOrchestrator:
         coercer: EventCoercer,
         conflict_mgr: ConflictManager,
         snapshot: MemorySnapshot,
+        embedder: Embedder | None = None,
     ) -> None:
         self._profile_store = profile_store
         self._extractor = extractor
@@ -44,6 +46,7 @@ class CorrectionOrchestrator:
         self._coercer = coercer
         self._conflict_mgr = conflict_mgr
         self._snapshot = snapshot
+        self._embedder = embedder
 
     def apply_live_user_correction(
         self,
@@ -194,6 +197,8 @@ class CorrectionOrchestrator:
         profile["last_verified_at"] = self._profile_store._utc_now_iso()
         self._profile_store.write_profile(profile)
 
+        # Embedding skipped: this method is sync; callers are sync entry points.
+        # Events will be embedded during the next consolidation pass.
         events_written = self._ingester.append_events(events)
 
         needs_user = 0

@@ -74,7 +74,11 @@ class EventIngester:
             return result
         return []
 
-    def append_events(self, events: Sequence[MemoryEvent]) -> int:
+    def append_events(
+        self,
+        events: Sequence[MemoryEvent],
+        embeddings: dict[str, list[float]] | None = None,
+    ) -> int:
         """Main ingestion entry point: dedup, merge, persist, and sync to vector store.
 
         Uses targeted SQL queries (PK lookup + FTS5 pre-filtering) instead of
@@ -112,7 +116,7 @@ class EventIngester:
                 existing = self._unpack_event(existing_row)
                 existing = self._coercer.ensure_event_provenance(existing)
                 merged_event = self._dedup.merge_events(existing, candidate, similarity=1.0)
-                self._write_events([merged_event])
+                self._write_events([merged_event], embeddings=embeddings)
                 merged += 1
                 continue
 
@@ -141,7 +145,7 @@ class EventIngester:
                         if sup_id:
                             candidate["supersedes_event_id"] = sup_id
                         candidate["supersedes_at"] = now_iso
-                        self._write_events([sup_event, candidate])
+                        self._write_events([sup_event, candidate], embeddings=embeddings)
                         written += 1
                         superseded += 1
                         supersession_found = True
@@ -157,12 +161,12 @@ class EventIngester:
                         merged_event = self._dedup.merge_events(
                             fts_candidates[dup_idx], candidate, similarity=dup_score
                         )
-                        self._write_events([merged_event])
+                        self._write_events([merged_event], embeddings=embeddings)
                         merged += 1
                         continue
 
                 # Step 4: New event — no match in any step
-                self._write_events([candidate])
+                self._write_events([candidate], embeddings=embeddings)
                 written += 1
 
         if written <= 0 and merged <= 0:
@@ -226,7 +230,11 @@ class EventIngester:
             event["metadata"] = meta
         return event
 
-    def _write_events(self, events: list[dict[str, Any]]) -> None:
+    def _write_events(
+        self,
+        events: list[dict[str, Any]],
+        embeddings: dict[str, list[float]] | None = None,
+    ) -> None:
         """Pack metadata extras and persist events to EventStore."""
         import json as _json
 
@@ -251,7 +259,8 @@ class EventIngester:
                 meta = {**meta, "_extra": extras}
             evt_copy["metadata"] = _json.dumps(meta) if meta else None
             evt_copy.setdefault("created_at", evt_copy.get("timestamp", _utc_now_iso()))
-            self._db.insert_event(evt_copy, embedding=None)
+            vec = embeddings.get(evt_copy["id"]) if embeddings else None
+            self._db.insert_event(evt_copy, embedding=vec)
 
     async def ingest_graph_triples(self, events: list[MemoryEvent]) -> int:
         """Feed triples from events into the knowledge graph (async).

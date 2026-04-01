@@ -21,8 +21,10 @@ from loguru import logger
 from nanobot.context.prompt_loader import prompts
 
 from ..event import MemoryEvent
+from .coercion import EventCoercer
 
 if TYPE_CHECKING:
+    from nanobot.memory.embedder import Embedder
     from nanobot.memory.write.ingester import EventIngester
     from nanobot.providers.base import LLMProvider
 
@@ -98,11 +100,13 @@ class MicroExtractor:
         ingester: EventIngester,
         model: str = "gpt-4o-mini",
         enabled: bool = False,
+        embedder: Embedder | None = None,
     ) -> None:
         self._provider = provider
         self._ingester = ingester
         self._model = model
         self._enabled = enabled
+        self._embedder = embedder
         self._pending_tasks: set[asyncio.Task[None]] = set()
 
     async def submit(
@@ -168,10 +172,38 @@ class MicroExtractor:
                     event.source = source
                     if turn_timestamp:
                         event.metadata["source_timestamp"] = turn_timestamp
-            self._ingester.append_events(events)
+            # Pre-assign IDs so embeddings can be keyed by event ID.
+            # from_dict() leaves id="" — generate deterministic IDs now so
+            # _compute_embeddings can build the id->vector mapping that
+            # append_events expects.
+            for event in events:
+                if not event.id:
+                    event.id = EventCoercer.build_event_id(
+                        event.type, event.summary, event.timestamp
+                    )
+            embeddings = await self._compute_embeddings(events)
+            self._ingester.append_events(events, embeddings=embeddings)
             logger.info("Micro-extraction: {} event(s) ingested", len(events))
         except Exception:  # crash-barrier: best-effort background extraction
             logger.opt(exception=True).warning("Micro-extraction failed")
+
+    async def _compute_embeddings(
+        self,
+        events: list[MemoryEvent],
+    ) -> dict[str, list[float]] | None:
+        """Compute embedding vectors for events. Returns None on failure."""
+        if not self._embedder or not self._embedder.available or not events:
+            return None
+        try:
+            summaries = [e.summary for e in events]
+            ids = [e.id for e in events if e.id]
+            if not ids:
+                return None
+            vectors = await self._embedder.embed_batch(summaries)
+            return dict(zip(ids, vectors))
+        except Exception:  # crash-barrier: embedding failure must not block ingestion
+            logger.warning("Embedding failed during micro-extraction, using FTS-only")
+            return None
 
     @staticmethod
     def _parse_events(response: Any) -> list[dict[str, Any]]:
