@@ -15,12 +15,15 @@ from loguru import logger
 
 try:
     import numpy as np
+except ImportError:  # crash-barrier: numpy may be absent
+    np = None  # type: ignore[assignment]
+
+try:
     import onnxruntime as ort
     from tokenizers import Tokenizer
 
     _ort = ort
-except (ImportError, OSError):  # crash-barrier: ONNX/numpy/tokenizers may be absent
-    np = None  # type: ignore[assignment]
+except (ImportError, OSError):  # crash-barrier: ONNX/tokenizers may be absent
     _ort = None
     Tokenizer = None  # type: ignore[assignment,misc]
 
@@ -59,7 +62,7 @@ class OnnxCrossEncoderReranker:
 
     def _ensure_model(self) -> bool:
         """Load model and tokenizer, downloading if necessary. Returns *True* on success."""
-        if _ort is None:
+        if _ort is None or np is None:
             return False
         if self._session is not None:
             return True
