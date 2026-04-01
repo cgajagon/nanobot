@@ -511,11 +511,14 @@ class TestConsolidationDeduplicationGuard:
         loop.sessions.save(session)
 
         consolidation_calls = 0
+        started = asyncio.Event()
+        release = asyncio.Event()
 
         async def _counting_consolidate(*args, **kwargs):
             nonlocal consolidation_calls
             consolidation_calls += 1
-            await asyncio.sleep(0.5)  # long enough to still be in-flight during 2nd message
+            started.set()
+            await release.wait()
             return True
 
         loop.memory.consolidate = _counting_consolidate  # type: ignore[method-assign]
@@ -523,7 +526,9 @@ class TestConsolidationDeduplicationGuard:
         msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
         async with loop._consolidator:
             await loop._process_message(msg)
+            await started.wait()  # deterministic: consolidation is in-flight
             await loop._process_message(msg)
+            release.set()  # let consolidation finish
 
         assert consolidation_calls == 1, (
             f"Expected exactly 1 consolidation, got {consolidation_calls}"
@@ -560,13 +565,22 @@ class TestConsolidationDeduplicationGuard:
         consolidation_calls = 0
         active = 0
         max_active = 0
+        first_started = asyncio.Event()
+        first_release = asyncio.Event()
+        second_started = asyncio.Event()
+        second_release = asyncio.Event()
 
         async def _counting_consolidate(*args, **kwargs):
             nonlocal consolidation_calls, active, max_active
             consolidation_calls += 1
             active += 1
             max_active = max(max_active, active)
-            await asyncio.sleep(0.05)
+            if consolidation_calls == 1:
+                first_started.set()
+                await first_release.wait()
+            else:
+                second_started.set()
+                await second_release.wait()
             active -= 1
             return True
 
@@ -575,11 +589,17 @@ class TestConsolidationDeduplicationGuard:
         async with loop._consolidator:
             msg = InboundMessage(channel="cli", sender_id="user", chat_id="test", content="hello")
             await loop._process_message(msg)
+            await first_started.wait()  # first consolidation is in-flight
 
             new_msg = InboundMessage(
                 channel="cli", sender_id="user", chat_id="test", content="/new"
             )
-            await loop._process_message(new_msg)
+            pending_new = asyncio.create_task(loop._process_message(new_msg))
+            await asyncio.sleep(0)  # yield so pending_new can schedule
+            first_release.set()  # let first consolidation finish
+            await second_started.wait()  # second consolidation is in-flight
+            second_release.set()  # let second finish
+            _ = await pending_new
 
         assert consolidation_calls == 2, (
             f"Expected normal + /new consolidations, got {consolidation_calls}"
