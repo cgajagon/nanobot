@@ -167,7 +167,7 @@ class ProfileStore:
     def _generate_belief_id(section: str, norm_text: str, created_at: str) -> str:
         """Generate a deterministic stable ID for a profile item."""
         raw = f"{section}|{norm_text}|{created_at}"
-        return "bf-" + hashlib.sha1(raw.encode()).hexdigest()[:8]
+        return "bf-" + hashlib.sha1(raw.encode()).hexdigest()[:16]
 
     # ------------------------------------------------------------------
     # Core profile CRUD

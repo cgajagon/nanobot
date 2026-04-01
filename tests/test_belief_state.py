@@ -20,7 +20,7 @@ class TestStableBeliefIds:
 
         assert "id" in entry
         assert entry["id"].startswith("bf-")
-        assert len(entry["id"]) == 11  # "bf-" + 8 hex chars
+        assert len(entry["id"]) == 19  # "bf-" + 16 hex chars
         assert "created_at" in entry
         assert entry["created_at"]  # non-empty
 
