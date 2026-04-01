@@ -21,6 +21,7 @@ from loguru import logger
 from nanobot.context.prompt_loader import prompts
 
 from ..event import MemoryEvent
+from .coercion import EventCoercer
 
 if TYPE_CHECKING:
     from nanobot.memory.embedder import Embedder
@@ -171,6 +172,15 @@ class MicroExtractor:
                     event.source = source
                     if turn_timestamp:
                         event.metadata["source_timestamp"] = turn_timestamp
+            # Pre-assign IDs so embeddings can be keyed by event ID.
+            # from_dict() leaves id="" — generate deterministic IDs now so
+            # _compute_embeddings can build the id->vector mapping that
+            # append_events expects.
+            for event in events:
+                if not event.id:
+                    event.id = EventCoercer.build_event_id(
+                        event.type, event.summary, event.timestamp
+                    )
             embeddings = await self._compute_embeddings(events)
             self._ingester.append_events(events, embeddings=embeddings)
             logger.info("Micro-extraction: {} event(s) ingested", len(events))
