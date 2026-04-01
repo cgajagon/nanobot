@@ -353,6 +353,7 @@ def build_agent(
             ingester=memory.ingester,
             model=config.memory.micro_extraction_model or "gpt-4o-mini",
             enabled=True,
+            embedder=memory._embedder,
         )
 
     # 13.2 Construct StrategyExtractor (procedural memory)
