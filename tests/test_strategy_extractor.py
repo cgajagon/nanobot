@@ -202,3 +202,71 @@ async def test_confidence_update_on_failure(
     assert updated[0].confidence == pytest.approx(0.45)
     assert updated[0].use_count == 1
     assert updated[0].success_count == 0
+
+
+@pytest.mark.asyncio
+async def test_confidence_increases_after_successful_turn(
+    extractor: StrategyExtractor, strategy_store: StrategyAccess
+) -> None:
+    """Strategies loaded into prompt should gain confidence when no guardrails fire."""
+    tool_log = [
+        _make_attempt("exec", success=True, output_empty=True, iteration=1),
+        _make_attempt("exec", success=True, output_empty=False, iteration=2),
+    ]
+    activations = [
+        {
+            "strategy_tag": "empty_recovery:exec",
+            "iteration": 1,
+            "source": "empty_result_recovery",
+            "failed_tool": "exec",
+            "failed_args": {"command": "obsidian search"},
+        }
+    ]
+    strategies = await extractor.extract_from_turn(
+        tool_results_log=tool_log,
+        guardrail_activations=activations,
+        user_text="find DS10540",
+    )
+    assert len(strategies) == 1
+    assert strategies[0].confidence == 0.5
+
+    # Simulate: strategy was in context, turn succeeded (no guardrails)
+    extractor.update_confidence(strategies, had_guardrail_activations=False)
+
+    updated = strategy_store.retrieve()
+    assert updated[0].confidence == pytest.approx(0.6)
+    assert updated[0].use_count == 1
+    assert updated[0].success_count == 1
+
+
+@pytest.mark.asyncio
+async def test_confidence_decreases_after_guardrail_turn(
+    extractor: StrategyExtractor, strategy_store: StrategyAccess
+) -> None:
+    """Strategies in prompt should lose confidence when guardrails fire."""
+    tool_log = [
+        _make_attempt("exec", success=True, output_empty=True, iteration=1),
+        _make_attempt("exec", success=True, output_empty=False, iteration=2),
+    ]
+    activations = [
+        {
+            "strategy_tag": "empty_recovery:exec",
+            "iteration": 1,
+            "source": "empty_result_recovery",
+            "failed_tool": "exec",
+            "failed_args": {"command": "obsidian search"},
+        }
+    ]
+    strategies = await extractor.extract_from_turn(
+        tool_results_log=tool_log,
+        guardrail_activations=activations,
+        user_text="find DS10540",
+    )
+
+    # Simulate: strategy was in context but guardrails fired anyway
+    extractor.update_confidence(strategies, had_guardrail_activations=True)
+
+    updated = strategy_store.retrieve()
+    assert updated[0].confidence == pytest.approx(0.45)
+    assert updated[0].use_count == 1
+    assert updated[0].success_count == 0

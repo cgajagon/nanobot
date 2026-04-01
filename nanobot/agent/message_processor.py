@@ -370,6 +370,18 @@ class MessageProcessor:
             except Exception:  # crash-barrier: strategy extraction is best-effort
                 logger.warning("Strategy extraction failed")
 
+        # Update confidence for strategies that were in context this turn
+        if self._strategy_extractor and self.context:
+            _loaded_strategies = self.context.last_loaded_strategies
+            if _loaded_strategies:
+                try:
+                    self._strategy_extractor.update_confidence(
+                        _loaded_strategies,
+                        had_guardrail_activations=bool(_guardrail_acts),
+                    )
+                except Exception:  # crash-barrier: confidence update is best-effort
+                    logger.warning("Strategy confidence update failed")
+
         # Append deferred conflict question after answering
         if pending_conflict_question:
             final_content += "\n\n---\n" + pending_conflict_question
