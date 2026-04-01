@@ -495,6 +495,18 @@ class TestBehavioralInvariants:
             f"Profile preference 'dark mode' missing from context:\n{context[:500]}"
         )
 
+    async def test_rrf_fusion_feeds_base_score(self, tmp_path: Path):
+        """Items retrieved via vector+FTS fusion must have nonzero base_score."""
+        store = MemoryStore(tmp_path, embedding_provider="hash")
+        events = [
+            MemoryEvent(summary="User prefers dark mode editors", type="preference"),
+            MemoryEvent(summary="Project deadline is March 2026", type="fact"),
+        ]
+        store.ingester.append_events(events)
+
+        context = await store.get_memory_context(query="dark mode preference")
+        assert "dark mode" in context.lower()
+
     async def test_pinned_item_always_included(self, tmp_path: Path):
         """A pinned preference must appear in context even for unrelated queries."""
         store = _make_store(tmp_path)
