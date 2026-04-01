@@ -190,6 +190,7 @@ class MemoryRetriever:
         for eid in ranked:
             entry = dict(items[eid])
             entry["_rrf_score"] = scores[eid]
+            entry["score"] = scores[eid]
             result.append(entry)
         return result
 

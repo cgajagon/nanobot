@@ -597,6 +597,15 @@ class TestRRFFusion:
         assert fused[0]["id"] == "v"
         assert fused[0]["_rrf_score"] > fused[1]["_rrf_score"]
 
+    def test_fuse_sets_score_key(self) -> None:
+        """RRF fusion must set item['score'] so scoring stage has a nonzero base."""
+        vec = [{"id": "a", "summary": "alpha"}]
+        fts = [{"id": "a", "summary": "alpha"}]
+        fused = MemoryRetriever._fuse_results(vec, fts, vector_weight=0.7)
+        assert "score" in fused[0], "item['score'] must be set by _fuse_results"
+        assert fused[0]["score"] > 0
+        assert fused[0]["score"] == fused[0]["_rrf_score"]
+
 
 class TestUnifiedRetrievePath:
     """Tests for the unified retrieval path (db + embedder injected)."""
