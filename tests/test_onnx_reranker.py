@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from nanobot.memory.ranking.onnx_reranker import OnnxCrossEncoderReranker
 
@@ -42,6 +43,14 @@ class TestOnnxRerankerAvailable:
     def test_available_true_regardless_of_model_name(self) -> None:
         reranker = OnnxCrossEncoderReranker(model_name="nonexistent-model")
         assert reranker.available is True
+
+    def test_available_false_when_onnx_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """available must return False when onnxruntime cannot be imported."""
+        import nanobot.memory.ranking.onnx_reranker as mod
+
+        monkeypatch.setattr(mod, "_ort", None)
+        reranker = OnnxCrossEncoderReranker()
+        assert reranker.available is False
 
 
 # ---------------------------------------------------------------------------
