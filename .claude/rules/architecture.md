@@ -223,6 +223,13 @@ See [docs/adr/](adr/) for Architecture Decision Records:
 ```
 memory/
 ├── store.py                  # Facade composing all subsystems
+├── _text.py                  # Text normalization and sanitization helpers
+├── consolidation_pipeline.py # Periodic memory consolidation
+├── constants.py              # Shared constants and tool schemas
+├── maintenance.py            # Database maintenance operations
+├── strategy.py               # Strategy data model and CRUD (StrategyAccess)
+├── strategy_extractor.py     # Guardrail recovery strategy extraction
+├── token_budget.py           # Token budget allocation for context assembly
 ├── db/                       # Storage layer (shared SQLite connection)
 │   ├── connection.py         # MemoryDatabase — connection + profile/history/snapshot
 │   ├── event_store.py        # EventStore — events + FTS5 + vector search
@@ -232,16 +239,21 @@ memory/
 ├── write/                    # Ingestion pipeline
 │   ├── extractor.py          # LLM + heuristic extraction
 │   ├── micro_extractor.py    # Lightweight extraction
+│   ├── heuristic_extractor.py # Lightweight heuristic extraction
 │   ├── ingester.py           # Event write path
 │   ├── conflicts.py          # Conflict detection
+│   ├── conflict_interaction.py # User-facing conflict interaction
+│   ├── correction_detector.py # Regex-based correction detection
 │   ├── classification.py     # Event classification
 │   ├── coercion.py           # Type coercion
 │   └── dedup.py              # Deduplication
 ├── read/                     # Retrieval pipeline
 │   ├── retriever.py          # Vector + FTS retrieval
 │   ├── retrieval_planner.py  # Query planning
+│   ├── retrieval_types.py    # Retrieval result type definitions
 │   ├── context_assembler.py  # Context assembly for prompts
 │   ├── graph_augmentation.py # Graph-augmented retrieval
+│   ├── long_term_capping.py  # Long-term memory capping logic
 │   └── scoring.py            # Relevance scoring
 ├── ranking/                  # Reranking
 │   ├── reranker.py           # Protocol + composite
@@ -249,9 +261,12 @@ memory/
 ├── persistence/              # Profile and snapshots
 │   ├── profile_io.py         # Profile CRUD + caching
 │   ├── snapshot.py           # MEMORY.md rebuild
-│   └── profile_correction.py # Conflict resolution
+│   ├── profile_correction.py # Conflict resolution
+│   ├── belief_lifecycle.py   # Belief confidence lifecycle
+│   └── conflict_types.py     # ConflictRecord dataclass
 └── graph/                    # Knowledge graph + ontology
     ├── graph.py              # SQLite-backed graph
+    ├── graph_traversal.py    # BFS traversal and graph queries
     ├── entity_classifier.py  # Entity type classification
     ├── entity_linker.py      # Entity linking
     ├── ontology_types.py     # Type definitions

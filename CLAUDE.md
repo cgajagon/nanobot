@@ -89,7 +89,7 @@ domain logic for tools, memory, or coordination.
 **Domain subsystems** — each owns a single bounded context:
 - `coordination/` — Mission management and scratchpad
 - `memory/` — Persistent memory with SQLite storage, hybrid retrieval, knowledge graph
-  (internal subdirs: `write/`, `read/`, `ranking/`, `persistence/`, `graph/`)
+  (internal subdirs: `db/`, `write/`, `read/`, `ranking/`, `persistence/`, `graph/`)
 - `tools/` — Tool infrastructure (`base`, `registry`, `executor`) and domain
   implementations (`builtin/`). Infrastructure and implementations are separated.
 - `context/` — Prompt assembly, token compression, skill discovery

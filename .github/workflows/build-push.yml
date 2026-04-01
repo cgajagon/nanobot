@@ -16,16 +16,23 @@ env:
 
 jobs:
   # CI-H1: Ensure CI passes before building/pushing Docker image.
-  # Waits for the checks job (matches the CI workflow job name exactly).
+  # Waits for both the checks job and all test matrix jobs (3.10, 3.11, 3.12).
   # The lewagon action matches individual check-run names, not workflow names.
   wait-for-ci:
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for CI workflow to succeed
+      - name: Wait for CI checks to succeed
         uses: lewagon/wait-on-check-action@v1.3.4
         with:
           ref: ${{ github.sha }}
           check-name: 'lint + typecheck + import-check + structure-check + prompt-manifest'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 20
+      - name: Wait for CI tests to succeed
+        uses: lewagon/wait-on-check-action@v1.3.4
+        with:
+          ref: ${{ github.sha }}
+          check-regexp: 'test \('
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 20
 
