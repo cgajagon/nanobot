@@ -115,7 +115,8 @@ class TestRerankerRolloutGating:
 
     def test_reranker_instance_created(self, tmp_path) -> None:
         store = self._make_store(tmp_path, "enabled")
-        assert isinstance(store._reranker, OnnxCrossEncoderReranker)
+        # When ONNX is available, uses OnnxCrossEncoderReranker; otherwise falls back
+        assert isinstance(store._reranker, (OnnxCrossEncoderReranker, CompositeReranker))
 
     def test_env_override_reranker_mode(self, tmp_path, monkeypatch) -> None:
         from nanobot.config.memory import MemoryConfig, RerankerConfig

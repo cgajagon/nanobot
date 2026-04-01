@@ -11,10 +11,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import onnxruntime as ort
 from loguru import logger
-from tokenizers import Tokenizer
+
+try:
+    import numpy as np
+except ImportError:  # crash-barrier: numpy may be absent
+    np = None  # type: ignore[assignment]
+
+try:
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+
+    _ort = ort
+except (ImportError, OSError):  # crash-barrier: ONNX/tokenizers may be absent
+    _ort = None
+    Tokenizer = None  # type: ignore[assignment,misc]
 
 _DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 _CACHE_DIR = Path.home() / ".cache" / "nanobot" / "models"
@@ -32,8 +43,8 @@ class OnnxCrossEncoderReranker:
     def __init__(self, model_name: str = "ms-marco-MiniLM-L-6-v2", alpha: float = 0.5) -> None:
         self._model_name = model_name
         self._alpha = max(0.0, min(1.0, float(alpha)))
-        self._session: ort.InferenceSession | None = None
-        self._tokenizer: Tokenizer | None = None
+        self._session: Any = None
+        self._tokenizer: Any = None
         self._model_dir = _CACHE_DIR / model_name
 
     # ------------------------------------------------------------------
@@ -42,8 +53,8 @@ class OnnxCrossEncoderReranker:
 
     @property
     def available(self) -> bool:
-        """Always *True* — onnxruntime is a mandatory dependency."""
-        return True
+        """Whether onnxruntime loaded successfully."""
+        return _ort is not None
 
     # ------------------------------------------------------------------
     # Lazy model loading
@@ -51,6 +62,8 @@ class OnnxCrossEncoderReranker:
 
     def _ensure_model(self) -> bool:
         """Load model and tokenizer, downloading if necessary. Returns *True* on success."""
+        if _ort is None or np is None:
+            return False
         if self._session is not None:
             return True
 
@@ -62,7 +75,7 @@ class OnnxCrossEncoderReranker:
                 return False
 
         try:
-            self._session = ort.InferenceSession(
+            self._session = _ort.InferenceSession(
                 str(model_path),
                 providers=["CPUExecutionProvider"],
             )

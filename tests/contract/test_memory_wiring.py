@@ -79,3 +79,17 @@ def test_maintenance_reindex_removed(tmp_path):
     """reindex_from_structured_memory was a no-op stub and has been removed."""
     store = _make_store(tmp_path)
     assert not hasattr(store.maintenance, "reindex_from_structured_memory")
+
+
+def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
+    """When ONNX reranker reports unavailable, store uses CompositeReranker."""
+    import nanobot.memory.ranking.onnx_reranker as onnx_mod
+    from nanobot.memory.ranking.reranker import CompositeReranker
+
+    original = onnx_mod._ort
+    try:
+        onnx_mod._ort = None  # simulate missing onnxruntime
+        store = MemoryStore(tmp_path)
+        assert isinstance(store._reranker, CompositeReranker)
+    finally:
+        onnx_mod._ort = original

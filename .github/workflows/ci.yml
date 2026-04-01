@@ -62,7 +62,7 @@ jobs:
             ~/.cache/huggingface
           key: onnx-models-v2-${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,reranker]"
       - name: Pre-download ONNX models
         run: |
           python -c "
@@ -85,7 +85,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,reranker]"
       - name: Run integration tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

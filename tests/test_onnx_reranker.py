@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import numpy as np
+import pytest
 
 from nanobot.memory.ranking.onnx_reranker import OnnxCrossEncoderReranker
+
+np = pytest.importorskip("numpy", reason="numpy not installed")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,15 +35,23 @@ def _make_items(*scores: float) -> list[dict[str, Any]]:
 
 
 class TestOnnxRerankerAvailable:
-    """OnnxCrossEncoderReranker.available is always True."""
+    """OnnxCrossEncoderReranker.available reflects runtime capability."""
 
-    def test_available_is_true(self) -> None:
+    def test_available_true_when_ort_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """available returns True when onnxruntime is importable."""
+        import nanobot.memory.ranking.onnx_reranker as mod
+
+        monkeypatch.setattr(mod, "_ort", MagicMock())
         reranker = OnnxCrossEncoderReranker()
         assert reranker.available is True
 
-    def test_available_true_regardless_of_model_name(self) -> None:
-        reranker = OnnxCrossEncoderReranker(model_name="nonexistent-model")
-        assert reranker.available is True
+    def test_available_false_when_onnx_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """available must return False when onnxruntime cannot be imported."""
+        import nanobot.memory.ranking.onnx_reranker as mod
+
+        monkeypatch.setattr(mod, "_ort", None)
+        reranker = OnnxCrossEncoderReranker()
+        assert reranker.available is False
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +80,13 @@ class TestOnnxRerankerEmptyInput:
 
 class TestOnnxRerankerWithMockSession:
     """Mock the ONNX session to return known scores, verify blending + sorting."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_ort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure _ort is truthy so _ensure_model does not short-circuit."""
+        import nanobot.memory.ranking.onnx_reranker as mod
+
+        monkeypatch.setattr(mod, "_ort", MagicMock())
 
     def _setup_reranker(self, logits: np.ndarray, alpha: float = 0.5) -> OnnxCrossEncoderReranker:
         """Create a reranker with a mocked ONNX session returning *logits*."""
