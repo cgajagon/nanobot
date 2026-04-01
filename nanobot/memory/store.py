@@ -17,6 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from nanobot.config.memory import MemoryConfig
 
 from ._text import _to_str_list, _utc_now_iso
@@ -136,18 +138,20 @@ class MemoryStore:
             db=self.db,
         )
 
-        # Cross-encoder re-ranker (Step 7)
+        # Cross-encoder re-ranker.
         reranker_model = self._memory_config.reranker.model.strip()
         reranker_alpha = self._memory_config.reranker.alpha
-        self._reranker: Reranker
+        self._reranker: Reranker = CompositeReranker(alpha=reranker_alpha)
         if reranker_model.startswith("onnx:"):
             from .ranking.onnx_reranker import OnnxCrossEncoderReranker
 
-            self._reranker = OnnxCrossEncoderReranker(
+            candidate = OnnxCrossEncoderReranker(
                 model_name=reranker_model.split(":", 1)[1], alpha=reranker_alpha
             )
-        else:
-            self._reranker = CompositeReranker(alpha=reranker_alpha)
+            if candidate.available:
+                self._reranker = candidate
+            else:
+                logger.warning("ONNX reranker unavailable, using composite fallback")
 
         # Knowledge graph (SQLite-backed via GraphStore).
         graph_enabled = self._memory_config.graph_enabled
