@@ -158,7 +158,7 @@ class MockConflictManager:
         profile: dict[str, Any] | None = None,
         resolve_result: dict[str, Any] | None = None,
     ) -> None:
-        self.profile_mgr = MockProfileMgr(profile or {})
+        self.profile_store = MockProfileMgr(profile or {})
         self._conflicts = conflicts or []
         self._resolve_result = resolve_result or {"ok": True, "db_operation": "update"}
 
