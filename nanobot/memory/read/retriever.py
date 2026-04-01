@@ -59,8 +59,6 @@ class MemoryRetriever:
         query: str,
         *,
         top_k: int = 6,
-        recency_half_life_days: float | None = None,
-        embedding_provider: str | None = None,
     ) -> list[RetrievedMemory]:
         self._graph_aug.reset_cache()
         t0 = time.monotonic()
@@ -70,7 +68,6 @@ class MemoryRetriever:
             return await self._retrieve_unified(
                 query,
                 top_k=top_k,
-                recency_half_life_days=recency_half_life_days,
                 t0=t0,
             )
 
@@ -85,7 +82,6 @@ class MemoryRetriever:
         query: str,
         *,
         top_k: int,
-        recency_half_life_days: float | None,
         t0: float,
     ) -> list[RetrievedMemory]:
         """Single fused retrieval: vector + FTS5 + RRF.
@@ -133,7 +129,7 @@ class MemoryRetriever:
         # 6. Score
         profile_data = self._scorer.load_profile_scoring_data()
         graph_entities = self._graph_aug.collect_graph_entity_names(
-            query, self._graph_aug._read_events_fn()
+            query, self._graph_aug.read_events()
         )
         scored = self._scorer.score_items(
             filtered,

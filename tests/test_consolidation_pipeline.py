@@ -229,7 +229,7 @@ class TestConsolidate:
         )
         pipeline._extractor.extract_structured_memory = AsyncMock(return_value=([], {}))
         pipeline._ingester.append_events.return_value = 0
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 

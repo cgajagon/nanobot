@@ -160,15 +160,15 @@ class EventStore:
         self,
         *,
         topic: str | None = None,
-        memory_type: str | None = None,
+        event_type: str | None = None,
         k: int = 10,
     ) -> list[dict[str, Any]]:
         """Fallback search by event type and/or metadata topic."""
         conditions: list[str] = []
         params: list[Any] = []
-        if memory_type:
+        if event_type:
             conditions.append("type = ?")
-            params.append(memory_type)
+            params.append(event_type)
         if topic:
             conditions.append("json_extract(metadata, '$.topic') = ?")
             params.append(topic)

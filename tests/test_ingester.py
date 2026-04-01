@@ -87,37 +87,36 @@ class TestCoerceEvent:
 class TestClassifyMemoryType:
     def test_semantic_for_fact(self) -> None:
         classifier = EventClassifier()
-        memory_type, stability, is_mixed = classifier.classify_memory_type(
+        memory_type, stability = classifier.classify_memory_type(
             event_type="fact", summary="Python is great", source="chat"
         )
         assert memory_type == "semantic"
         assert stability == "high"
-        assert not is_mixed
 
     def test_semantic_for_preference(self) -> None:
         classifier = EventClassifier()
-        memory_type, _, _ = classifier.classify_memory_type(
+        memory_type, _ = classifier.classify_memory_type(
             event_type="preference", summary="User prefers vim", source="chat"
         )
         assert memory_type == "semantic"
 
     def test_episodic_for_task(self) -> None:
         classifier = EventClassifier()
-        memory_type, _, _ = classifier.classify_memory_type(
+        memory_type, _ = classifier.classify_memory_type(
             event_type="task", summary="Deploy v2", source="chat"
         )
         assert memory_type == "episodic"
 
     def test_episodic_for_decision(self) -> None:
         classifier = EventClassifier()
-        memory_type, _, _ = classifier.classify_memory_type(
+        memory_type, _ = classifier.classify_memory_type(
             event_type="decision", summary="Chose React", source="chat"
         )
         assert memory_type == "episodic"
 
     def test_reflection_source(self) -> None:
         classifier = EventClassifier()
-        memory_type, stability, _ = classifier.classify_memory_type(
+        memory_type, stability = classifier.classify_memory_type(
             event_type="fact", summary="Any text", source="reflection"
         )
         assert memory_type == "reflection"
@@ -325,20 +324,6 @@ class TestDefaultTopicForEventType:
         assert EventClassifier.default_topic_for_event_type("unknown") == "general"
 
 
-class TestDistillSemanticSummary:
-    def test_strips_causal_clause(self) -> None:
-        result = EventClassifier.distill_semantic_summary("User likes vim because it is fast")
-        assert result == "User likes vim"
-
-    def test_keeps_short_text(self) -> None:
-        result = EventClassifier.distill_semantic_summary("short because x")
-        # "short" is < 12 chars, so full text is returned.
-        assert result == "short because x"
-
-    def test_empty(self) -> None:
-        assert EventClassifier.distill_semantic_summary("") == ""
-
-
 class TestIngesterWithDB:
     """Tests for ingester writing to MemoryDatabase."""
 
@@ -355,7 +340,6 @@ class TestIngesterWithDB:
             dedup=dedup,
             graph=graph,
             db=db.event_store,
-            embedder=None,
         )
         return ingester, db, MagicMock()  # third return for compat
 

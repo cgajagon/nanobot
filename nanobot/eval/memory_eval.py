@@ -51,32 +51,16 @@ class EvalRunner:
         """Return backend health and rollout status.
 
         Legacy per-counter metrics have been removed in favour of Langfuse.
-        The ``metrics`` and ``kpis`` keys are kept empty for backward
-        compatibility with callers that destructure the return value.
+        The ``metrics`` and ``kpis`` keys are kept empty for callers
+        that destructure the return value.
         """
         stats = self._maintenance._backend_stats_for_eval()
-        vector_points_count = stats["vector_points_count"]
-        vector_search_count = stats["vector_search_count"]
-        history_rows_count = stats["history_rows_count"]
-        vector_enabled = stats["vector_enabled"]
-        vector_mode = stats["vector_mode"]
-
-        vector_health_state = (
-            "degraded"
-            if (history_rows_count > 0 and vector_points_count == 0 and vector_search_count == 0)
-            else "healthy"
-        )
 
         return {
             "metrics": {},
             "kpis": {},
             "backend": {
-                "vector_enabled": vector_enabled,
-                "vector_mode": vector_mode,
-                "vector_points_count": vector_points_count,
-                "vector_search_count": vector_search_count,
-                "history_rows_count": history_rows_count,
-                "vector_health_state": vector_health_state,
+                "db_event_count": stats["db_event_count"],
             },
             "rollout": self._memory_config.rollout_status(),
         }
@@ -86,8 +70,6 @@ class EvalRunner:
         cases: list[dict[str, Any]],
         *,
         default_top_k: int = 6,
-        recency_half_life_days: float | None = None,
-        embedding_provider: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate retrieval quality using labeled cases.
 
@@ -200,8 +182,6 @@ class EvalRunner:
             retrieved = await self._retriever.retrieve(
                 query,
                 top_k=top_k,
-                recency_half_life_days=recency_half_life_days,
-                embedding_provider=embedding_provider,
             )
 
             hits = 0

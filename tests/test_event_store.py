@@ -187,9 +187,9 @@ class TestMetadataSearch:
     def test_search_empty_conditions(self, store: EventStore) -> None:
         assert store.search_by_metadata(k=10) == []
 
-    def test_search_by_memory_type(self, store: EventStore) -> None:
+    def test_search_by_event_type(self, store: EventStore) -> None:
         store.insert_event(_make_event(id="mt1", type="preference"))
         store.insert_event(_make_event(id="mt2", type="fact"))
-        results = store.search_by_metadata(memory_type="preference", k=10)
+        results = store.search_by_metadata(event_type="preference", k=10)
         assert len(results) == 1
         assert results[0]["id"] == "mt1"

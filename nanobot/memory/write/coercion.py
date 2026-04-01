@@ -83,7 +83,7 @@ class EventCoercer:
             raw_status=raw.get("status"),
         )
         metadata_input = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else None
-        metadata, _ = self._classifier.normalize_memory_metadata(
+        metadata = self._classifier.normalize_memory_metadata(
             metadata_input,
             event_type=event_type,
             summary=summary.strip(),
@@ -148,7 +148,7 @@ class EventCoercer:
         metadata_input = (
             event_copy.get("metadata") if isinstance(event_copy.get("metadata"), dict) else None
         )
-        metadata, _ = self._classifier.normalize_memory_metadata(
+        metadata = self._classifier.normalize_memory_metadata(
             metadata_input,
             event_type=event_type,
             summary=summary,

@@ -156,40 +156,7 @@ def memory_reindex(
     ),
 ) -> None:
     """Reindex vectors from structured profile/events only."""
-    from nanobot.config.loader import load_config
-    from nanobot.memory import MemoryStore
-
-    config = load_config()
-    ac = config.agents.defaults
-    store = MemoryStore(
-        config.workspace_path,
-        memory_config=ac.memory,
-    )
-    result = store.maintenance.reindex_from_structured_memory(
-        max_events=max_events if max_events > 0 else None,
-        reset_existing=reset,
-        compact=False,
-        read_profile_fn=store.profile_mgr.read_profile,
-        read_events_fn=store.ingester.read_events,
-        ingester=store.ingester,
-        profile_keys=PROFILE_KEYS,
-        vector_points_count_fn=None,
-        vector_rows_fn=None,
-    )
-    table = Table(title="Memory Reindex")
-    table.add_column("Field", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("ok", str(result.get("ok")))
-    table.add_row("reason", str(result.get("reason", "")))
-    table.add_row("written", str(result.get("written", 0)))
-    table.add_row("failed", str(result.get("failed", 0)))
-    table.add_row("events_indexed", str(result.get("events_indexed", 0)))
-    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
-    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
-    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
-    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
-    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
-    console.print(table)
+    console.print("[bold]no-op:[/bold] events already in SQLite — reindex is not needed.")
 
 
 @memory_app.command("compact")
@@ -204,44 +171,7 @@ def memory_compact(
     ),
 ) -> None:
     """Compact backend memory (dedup/drop superseded) and rebuild vectors from structured sources."""
-    from nanobot.config.loader import load_config
-    from nanobot.memory import MemoryStore
-
-    config = load_config()
-    ac = config.agents.defaults
-    store = MemoryStore(
-        config.workspace_path,
-        memory_config=ac.memory,
-    )
-    result = store.maintenance.reindex_from_structured_memory(
-        max_events=max_events if max_events > 0 else None,
-        reset_existing=reset,
-        compact=True,
-        read_profile_fn=store.profile_mgr.read_profile,
-        read_events_fn=store.ingester.read_events,
-        ingester=store.ingester,
-        profile_keys=PROFILE_KEYS,
-        vector_points_count_fn=None,
-        vector_rows_fn=None,
-    )
-    table = Table(title="Memory Compaction")
-    table.add_column("Field", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("ok", str(result.get("ok")))
-    table.add_row("reason", str(result.get("reason", "")))
-    table.add_row("written", str(result.get("written", 0)))
-    table.add_row("failed", str(result.get("failed", 0)))
-    table.add_row("events_before_compaction", str(result.get("events_before_compaction", 0)))
-    table.add_row("events_after_compaction", str(result.get("events_after_compaction", 0)))
-    table.add_row("events_superseded_dropped", str(result.get("events_superseded_dropped", 0)))
-    table.add_row("events_duplicates_dropped", str(result.get("events_duplicates_dropped", 0)))
-    table.add_row("vector_points_after", str(result.get("vector_points_after", 0)))
-    reset_payload = result.get("reset", {}) if isinstance(result.get("reset"), dict) else {}
-    table.add_row("reset_requested", str(reset_payload.get("requested", False)))
-    table.add_row("reset_ok", str(reset_payload.get("ok", False)))
-    table.add_row("reset_reason", str(reset_payload.get("reason", "")))
-    table.add_row("reset_deleted_estimate", str(reset_payload.get("deleted_estimate", 0)))
-    console.print(table)
+    console.print("[bold]no-op:[/bold] events already in SQLite — compact is not needed.")
 
 
 @memory_app.command("verify")

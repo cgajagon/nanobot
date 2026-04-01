@@ -105,22 +105,24 @@ class TestConsolidateMemoryToolSchema:
         assert "history_entry" in props
         assert props["history_entry"]["type"] == "string"
 
-    def test_events_reuses_save_events_schema(self) -> None:
+    def test_events_matches_save_events_schema(self) -> None:
         combined_events = _CONSOLIDATE_MEMORY_TOOL[0]["function"]["parameters"]["properties"][
             "events"
         ]
         original_events = _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"]["events"]
-        # They should be the exact same object (reference equality)
-        assert combined_events is original_events
+        # Deep-copied for isolation — content must match, not identity
+        assert combined_events == original_events
+        assert combined_events is not original_events
 
-    def test_profile_updates_reuses_save_events_schema(self) -> None:
+    def test_profile_updates_matches_save_events_schema(self) -> None:
         combined_pu = _CONSOLIDATE_MEMORY_TOOL[0]["function"]["parameters"]["properties"][
             "profile_updates"
         ]
         original_pu = _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"][
             "profile_updates"
         ]
-        assert combined_pu is original_pu
+        assert combined_pu == original_pu
+        assert combined_pu is not original_pu
 
     def test_profile_updates_not_required(self) -> None:
         required = _CONSOLIDATE_MEMORY_TOOL[0]["function"]["parameters"]["required"]
@@ -162,7 +164,7 @@ class TestConsolidationRouting:
         )
         pipeline._extractor.to_str_list.return_value = []
         pipeline._ingester.append_events.return_value = 1
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -208,7 +210,7 @@ class TestConsolidationRouting:
         pipeline._extractor.default_profile_updates.return_value = {}
         pipeline._extractor.heuristic_extract_events.return_value = ([], {})
         pipeline._ingester.append_events.return_value = 0
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -255,7 +257,7 @@ class TestSingleToolFallbacks:
             },
         )
         pipeline._ingester.append_events.return_value = 1
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -293,7 +295,7 @@ class TestSingleToolFallbacks:
             },
         )
         pipeline._ingester.append_events.return_value = 0
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -331,7 +333,7 @@ class TestSingleToolFallbacks:
             },
         )
         pipeline._ingester.append_events.return_value = 0
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -378,7 +380,7 @@ class TestHistoryEntryExtraction:
         )
         pipeline._extractor.to_str_list.return_value = []
         pipeline._ingester.append_events.return_value = 1
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -418,7 +420,7 @@ class TestHistoryEntryExtraction:
         )
         pipeline._extractor.to_str_list.return_value = []
         pipeline._ingester.append_events.return_value = 1
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 
@@ -460,7 +462,7 @@ class TestHistoryEntryExtraction:
             },
         )
         pipeline._ingester.append_events.return_value = 0
-        pipeline._ingester._ingest_graph_triples = AsyncMock()
+        pipeline._ingester.ingest_graph_triples = AsyncMock()
         pipeline._profile_mgr.read_profile.return_value = {}
         pipeline._profile_mgr._apply_profile_updates.return_value = (0, 0, 0)
 

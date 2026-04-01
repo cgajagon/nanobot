@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from . import _norm
 from .entity_classifier import classify_entity_type, refine_type_from_predicate
 from .graph_traversal import find_paths as _find_paths
 from .graph_traversal import query_subgraph as _query_subgraph
@@ -25,11 +26,6 @@ from .ontology_types import Entity, EntityType, Relationship, Triple
 
 if TYPE_CHECKING:
     from ..db.graph_store import GraphStore
-
-
-def _norm(name: str) -> str:
-    """Canonical name normalisation: strip, lower, spaces to underscores."""
-    return name.strip().lower().replace(" ", "_")
 
 
 class KnowledgeGraph:
@@ -389,6 +385,32 @@ class KnowledgeGraph:
                         triples.append(triple)
 
         return triples
+
+    # ------------------------------------------------------------------
+    # Low-level accessors (used by graph_traversal functions)
+    # ------------------------------------------------------------------
+
+    def get_entity_row(self, canonical: str) -> dict[str, Any] | None:
+        """Return raw entity row by canonical name, or None.
+
+        Thin wrapper around ``GraphStore.get_entity`` so that traversal
+        functions do not need to access ``_db`` directly.
+        """
+        if self._db is None:
+            return None
+        return self._db.get_entity(canonical)
+
+    def get_edges_from(self, source: str) -> list[dict[str, Any]]:
+        """Return outgoing edges from the given canonical source."""
+        if self._db is None:
+            return []
+        return self._db.get_edges_from(source)
+
+    def get_edges_to(self, target: str) -> list[dict[str, Any]]:
+        """Return incoming edges to the given canonical target."""
+        if self._db is None:
+            return []
+        return self._db.get_edges_to(target)
 
     async def resolve_entity(self, name: str) -> str:
         """Return the canonical name for an entity (alias resolution).

@@ -79,16 +79,15 @@ class TestMemoryStoreExtraHelpers:
     def test_type_classification_and_metadata_normalization(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
 
-        memory_type, stability, is_mixed = store._classifier.classify_memory_type(
+        memory_type, stability = store._classifier.classify_memory_type(
             event_type="preference",
             summary="User prefers dark mode because setup failed yesterday",
             source="chat",
         )
         assert memory_type == "semantic"
         assert stability in {"medium", "high"}
-        assert is_mixed is True
 
-        normalized, mixed_flag = store._classifier.normalize_memory_metadata(
+        normalized = store._classifier.normalize_memory_metadata(
             {"memory_type": "reflection", "confidence": 2.0, "ttl_days": -1},
             event_type="fact",
             summary="A reflection without evidence",
@@ -96,16 +95,6 @@ class TestMemoryStoreExtraHelpers:
         )
         assert normalized["memory_type"] in {"episodic", "reflection"}
         assert 0.0 <= normalized["confidence"] <= 1.0
-        assert isinstance(mixed_flag, bool)
-
-    def test_distillation(self, tmp_path: Path) -> None:
-        store = _store(tmp_path)
-
-        assert store._classifier.distill_semantic_summary("alpha") == "alpha"
-        distilled = store._classifier.distill_semantic_summary(
-            "User prefers vim because it is fast"
-        )
-        assert "because" not in distilled.lower() or len(distilled) < 12
 
     def test_compaction_helpers(self, tmp_path: Path) -> None:
         event = {"summary": "hello", "type": "fact", "memory_type": "semantic", "topic": "general"}
@@ -331,13 +320,8 @@ class TestMemoryStoreExtraCorpusAndEvaluation:
         )
         assert isinstance(seeded, dict)
 
-        reindexed = store.maintenance.reindex_from_structured_memory(
-            read_profile_fn=store.profile_mgr.read_profile,
-            read_events_fn=store.ingester.read_events,
-            ingester=store.ingester,
-            profile_keys=PROFILE_KEYS,
-        )
-        assert isinstance(reindexed, dict)
+        # reindex_from_structured_memory was removed (no-op stub)
+        assert not hasattr(store.maintenance, "reindex_from_structured_memory")
 
     async def test_evaluation_and_gate_helpers(self, tmp_path: Path) -> None:
         store = _store(tmp_path)

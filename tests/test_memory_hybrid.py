@@ -128,8 +128,6 @@ class TestHybridMemoryStore:
         retrieved = await store.retriever.retrieve(
             "oauth2 api",
             top_k=2,
-            recency_half_life_days=30.0,
-            embedding_provider="hash",
         )
         assert len(retrieved) >= 1
         assert retrieved[0].summary.lower().find("oauth2") >= 0
@@ -349,8 +347,6 @@ class TestHybridMemoryStore:
             query="dark mode",
             retrieval_k=4,
             token_budget=700,
-            recency_half_life_days=30.0,
-            embedding_provider="hash",
         )
 
         report = store.eval_runner.get_observability_report()
@@ -408,8 +404,6 @@ class TestHybridMemoryStore:
                 },
             ],
             default_top_k=6,
-            recency_half_life_days=30.0,
-            embedding_provider="hash",
         )
 
         assert report["cases"] == 2
@@ -419,9 +413,7 @@ class TestHybridMemoryStore:
 
     async def test_evaluate_retrieval_cases_empty_input(self, tmp_path: Path) -> None:
         store = MemoryStore(tmp_path, embedding_provider="hash")
-        report = await store.eval_runner.evaluate_retrieval_cases(
-            [], default_top_k=6, embedding_provider="hash"
-        )
+        report = await store.eval_runner.evaluate_retrieval_cases([], default_top_k=6)
         assert report["cases"] == 0
         assert report["summary"]["recall_at_k"] == 0.0
         assert report["summary"]["precision_at_k"] == 0.0
@@ -637,8 +629,6 @@ class TestHybridMemoryStore:
         retrieved = await store.retriever.retrieve(
             "deployment region us-east-1 eu-west-1",
             top_k=2,
-            recency_half_life_days=30.0,
-            embedding_provider="hash",
         )
         assert retrieved
         assert "us-east-1" in retrieved[0].summary.lower()
@@ -697,9 +687,7 @@ class TestHybridMemoryStore:
         assert len(event.get("aliases", [])) >= 2
         assert len(event.get("evidence", [])) >= 2
 
-        retrieved = await store.retriever.retrieve(
-            "oauth2 tokens", top_k=2, embedding_provider="hash"
-        )
+        retrieved = await store.retriever.retrieve("oauth2 tokens", top_k=2)
         assert retrieved
         # After dedup merge, the surviving event keeps the canonical ID of the first
         assert retrieved[0].id == "dup-1"
@@ -771,9 +759,7 @@ class TestHybridMemoryStore:
             ]
         )
 
-        retrieved = await store.retriever.retrieve(
-            "postgresql database", top_k=2, embedding_provider="hash"
-        )
+        retrieved = await store.retriever.retrieve("postgresql database", top_k=2)
         assert retrieved
         # Storage redesign: unified pipeline uses typed RetrievedMemory with scores
         assert retrieved[0].scores is not None
@@ -820,8 +806,6 @@ class TestHybridMemoryStore:
         retrieved = await store.retriever.retrieve(
             "postgresql",
             top_k=2,
-            recency_half_life_days=30.0,
-            embedding_provider="hash",
         )
         assert len(retrieved) == 2
         # The more recent event should rank first due to recency boost
@@ -859,4 +843,4 @@ class TestHybridMemoryStore:
 
         # With MemoryDatabase, events are read directly from SQLite.
         # Just verify retrieve doesn't crash.
-        await store.retriever.retrieve("test event", top_k=3, embedding_provider="hash")
+        await store.retriever.retrieve("test event", top_k=3)

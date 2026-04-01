@@ -11,6 +11,7 @@ Tool schemas used by memory consolidation and event extraction:
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -154,12 +155,14 @@ _CONSOLIDATE_MEMORY_TOOL: list[dict[str, Any]] = [
                             "2-5 sentence summary of key events, decisions, and topics discussed."
                         ),
                     },
-                    "events": _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"][
-                        "events"
-                    ],
-                    "profile_updates": _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"][
-                        "profile_updates"
-                    ],
+                    "events": copy.deepcopy(
+                        _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"]["events"]
+                    ),
+                    "profile_updates": copy.deepcopy(
+                        _SAVE_EVENTS_TOOL[0]["function"]["parameters"]["properties"][
+                            "profile_updates"
+                        ]
+                    ),
                 },
                 "required": ["history_entry", "events"],
             },
