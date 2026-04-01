@@ -749,7 +749,7 @@ class TestHybridMemoryStore:
 
     async def test_local_keyword_retrieval_without_vector(self, tmp_path: Path) -> None:
         """When vector store is unavailable, retrieve() uses local keyword matching."""
-        store = MemoryStore(tmp_path, embedding_provider="hash", vector_backend="sqlite")
+        store = MemoryStore(tmp_path, embedding_provider="hash")
         # vector store removed — local path is the default
         store.ingester.append_events(
             [
@@ -780,7 +780,7 @@ class TestHybridMemoryStore:
 
     async def test_keyword_retrieval_with_recency(self, tmp_path: Path) -> None:
         """Recency weighting should boost recent events of same type over old ones."""
-        store = MemoryStore(tmp_path, embedding_provider="hash", vector_backend="faiss")
+        store = MemoryStore(tmp_path, embedding_provider="hash")
         # vector store removed — local recency scoring is the only path
         store.ingester.append_events(
             [

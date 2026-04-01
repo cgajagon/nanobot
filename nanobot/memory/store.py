@@ -58,7 +58,6 @@ class MemoryStore:
         *,
         memory_config: MemoryConfig | None = None,
         embedding_provider: str | None = None,
-        vector_backend: str | None = None,
     ):
         self.workspace = workspace
         self._memory_config: MemoryConfig = memory_config or MemoryConfig()
