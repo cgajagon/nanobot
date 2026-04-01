@@ -43,6 +43,7 @@ from .write.extractor import MemoryExtractor
 from .write.ingester import EventIngester
 
 if TYPE_CHECKING:
+    from nanobot.eval.memory_eval import EvalRunner
     from nanobot.providers.base import LLMProvider
     from nanobot.session.manager import Session
 
@@ -199,16 +200,10 @@ class MemoryStore:
             embedder_available=self._embedder is not None,
         )
 
-        # Evaluation / observability helper (LAN-204)
-        from nanobot.eval.memory_eval import EvalRunner
-
-        self.eval_runner = EvalRunner(
-            retriever=self.retriever,
-            workspace=self.workspace,
-            memory_dir=self.memory_dir,
-            memory_config=self._memory_config,
-            maintenance=self.maintenance,
-        )
+        # Evaluation / observability helper (LAN-204) — lazy-constructed on
+        # first access so the eval package is not imported during normal agent
+        # operation.  Only CLI memory commands access this property.
+        self._eval_runner: EvalRunner | None = None
 
         # MemorySnapshot: rebuild memory snapshots + verify integrity.
         self.snapshot = MemorySnapshot(
@@ -252,6 +247,21 @@ class MemoryStore:
     def memory_config(self) -> MemoryConfig:
         """Typed memory configuration."""
         return self._memory_config
+
+    @property
+    def eval_runner(self) -> EvalRunner:
+        """Lazy-constructed EvalRunner — only imported when accessed (CLI commands)."""
+        if self._eval_runner is None:
+            from nanobot.eval.memory_eval import EvalRunner
+
+            self._eval_runner = EvalRunner(
+                retriever=self.retriever,
+                workspace=self.workspace,
+                memory_dir=self.memory_dir,
+                memory_config=self._memory_config,
+                maintenance=self.maintenance,
+            )
+        return self._eval_runner
 
     def _reindex_callback(self) -> None:
         """Void-typed wrapper for MemoryMaintenance.reindex_fn."""

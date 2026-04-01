@@ -70,7 +70,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-file", required=True, help="Markdown summary output path")
     parser.add_argument("--top-k", type=int, default=6)
     parser.add_argument("--embedding-provider", default="hash")
-    parser.add_argument("--vector-backend", default="json")
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -244,7 +243,6 @@ def main() -> int:
     store = MemoryStore(
         workspace,
         embedding_provider=args.embedding_provider,
-        vector_backend=args.vector_backend,
     )
 
     # Seed the profile (preferences, constraints, conflicts, relationships).
