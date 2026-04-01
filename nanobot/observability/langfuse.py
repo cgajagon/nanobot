@@ -93,43 +93,11 @@ def init_langfuse(config: LangfuseConfig) -> None:
 
         logger.info("Langfuse observability initialized (host={})", config.host)
 
-        # Enable litellm OTEL callback so LLM calls emit spans through the
-        # global TracerProvider that Langfuse v4 just configured.  The
-        # LangfuseSpanProcessor recognises litellm's instrumentation scope
-        # and maps the spans to GENERATION observations nested under the
-        # active trace_request context.
-        try:
-            import litellm as _litellm
-
-            if "otel" not in _litellm.success_callback:
-                _litellm.success_callback.append("otel")
-            if "otel" not in _litellm.failure_callback:
-                _litellm.failure_callback.append("otel")
-            # Force litellm to create its own litellm_request span rather than
-            # writing gen_ai attributes onto the parent span — this prevents
-            # the root "request" observation from being reclassified as a
-            # GENERATION and avoids duplicated input/output/cost data.
-            _os.environ.setdefault("USE_OTEL_LITELLM_REQUEST_SPAN", "true")
-            # Suppress the raw_gen_ai_request sub-span that litellm creates
-            # under each litellm_request.  Without this, every LLM call
-            # produces two GENERATIONs with identical usage/cost, causing
-            # Langfuse to double-count costs.
-            #
-            # We monkey-patch _maybe_log_raw_request instead of setting
-            # turn_off_message_logging=True because that flag also suppresses
-            # input/output attributes on the primary litellm_request span
-            # (both are gated by the same check in set_attributes line ~175).
-            from litellm.integrations.opentelemetry import OpenTelemetry as _OtelCls
-
-            if hasattr(_OtelCls, "_maybe_log_raw_request"):
-                _OtelCls._maybe_log_raw_request = lambda self, *a, **kw: None  # type: ignore[assignment]
-            else:
-                logger.warning(
-                    "litellm OpenTelemetry._maybe_log_raw_request not found — "
-                    "raw request spans may cause duplicate GENERATION costs"
-                )
-        except Exception:  # crash-barrier: litellm import/config is optional
-            logger.opt(exception=True).warning("Could not enable litellm OTEL callback")
+        # NOTE: litellm's "otel" callback is NOT registered.
+        # InstrumentedProvider (observability/instrumented_provider.py) handles
+        # all LLM call tracing via manual Langfuse GENERATION observations.
+        # The litellm OTEL callback had a bug where async streaming dispatched
+        # to litellm._async_success_callback (empty), causing 0 tokens/cost.
 
         # Suppress benign warnings from litellm/langfuse loggers.
         try:
@@ -150,18 +118,8 @@ def init_langfuse(config: LangfuseConfig) -> None:
                     return "No active span in current context" not in record.getMessage()
 
             logging.getLogger("langfuse").addFilter(_SpanCtxFilter())
-
-            # OTEL SDK warns when litellm's async callback sets attributes on
-            # a span that has already been ended.  These are harmless in
-            # production (the attributes are simply ignored).
-            class _EndedSpanFilter(logging.Filter):
-                def filter(self, record: logging.LogRecord) -> bool:
-                    msg = record.getMessage()
-                    return "ended span" not in msg and "set_status on an ended span" not in msg
-
-            logging.getLogger("opentelemetry.sdk.trace").addFilter(_EndedSpanFilter())
         except Exception as exc:  # crash-barrier: filter setup is optional
-            logger.debug("OTel ended-span filter setup failed: {}", exc)
+            logger.debug("Log filter setup failed: {}", exc)
 
     except Exception:  # crash-barrier: langfuse init should never crash the agent
         logger.opt(exception=True).warning("Failed to initialize Langfuse — disabled")
