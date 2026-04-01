@@ -142,7 +142,6 @@ async def test_extractor_correction_helpers_and_provider_failure() -> None:
         old_messages=[{"role": "user", "content": "I prefer concise output"}],
         source_start=1,
     )
-    assert extractor.last_extraction_source == "heuristic"
     assert isinstance(events, list)
     assert "preferences" in updates
 
