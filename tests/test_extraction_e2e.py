@@ -129,21 +129,6 @@ class TestExtractionToRetrieval:
         # Should have at most 1 event (second is deduped)
         assert len(events) <= 1 or written <= 1
 
-    def test_extraction_source_set(self, tmp_path: Path) -> None:
-        """Heuristic extraction should set last_extraction_source."""
-        store = self._make_store(tmp_path)
-        msgs = [
-            {
-                "role": "user",
-                "content": "I use VS Code for Python development.",
-                "timestamp": "2026-03-01T12:00:00+00:00",
-            }
-        ]
-        store.extractor.heuristic_extract_events(msgs, source_start=0)
-        # heuristic_extract_events doesn't set source — only extract_structured_memory does
-        # But we can verify the extractor attribute exists
-        assert hasattr(store.extractor, "last_extraction_source")
-
     def test_assistant_messages_ignored(self, tmp_path: Path) -> None:
         """Only user messages should produce events in heuristic mode."""
         store = self._make_store(tmp_path)

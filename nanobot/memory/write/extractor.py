@@ -56,7 +56,6 @@ class MemoryExtractor:
         self.to_str_list = to_str_list
         self.coerce_event = coerce_event
         self.utc_now_iso = utc_now_iso
-        self.last_extraction_source: str = ""
 
     @staticmethod
     def default_profile_updates() -> dict[str, list[str]]:
@@ -193,7 +192,6 @@ class MemoryExtractor:
                             events.append(event)
                         if len(events) >= 40:
                             break
-                    self.last_extraction_source = "llm"
                     if channel or tool_hints:
                         _source = build_source(channel, tool_hints or [])
                         for event in events:
@@ -206,7 +204,6 @@ class MemoryExtractor:
                 "Structured event extraction failed, falling back to heuristic extraction"
             )
 
-        self.last_extraction_source = "heuristic"
         events, updates = self.heuristic_extract_events(old_messages, source_start=source_start)
         if channel or tool_hints:
             _source = build_source(channel, tool_hints or [])

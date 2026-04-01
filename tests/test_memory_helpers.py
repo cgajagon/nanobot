@@ -1,4 +1,4 @@
-"""Tests for nanobot.memory._text and graph._keywords — shared memory utilities."""
+"""Tests for nanobot.memory._text — shared memory utilities."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from nanobot.memory._text import (
     _tokenize,
     _utc_now_iso,
 )
-from nanobot.memory.graph._keywords import _extract_query_keywords
 
 
 class TestUtcNowIso:
@@ -145,23 +144,3 @@ class TestContainsAny:
 
     def test_none_text(self) -> None:
         assert _contains_any("", ("x",)) is False
-
-
-class TestExtractQueryKeywords:
-    def test_filters_stopwords(self) -> None:
-        result = _extract_query_keywords("what is the weather in London")
-        assert "london" in result
-        assert "weather" in result
-        assert "what" not in result
-        assert "the" not in result
-
-    def test_excludes_short_tokens(self) -> None:
-        result = _extract_query_keywords("is it ok to go")
-        # all tokens <= 2 chars or stopwords
-        assert len(result) == 0
-
-    def test_preserves_significant(self) -> None:
-        result = _extract_query_keywords("python debugging techniques")
-        assert "python" in result
-        assert "debugging" in result
-        assert "techniques" in result

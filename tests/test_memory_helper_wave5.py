@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nanobot.memory.graph.entity_linker import register_alias, resolve_alias
+from nanobot.memory.graph.entity_linker import resolve_alias
 from nanobot.memory.ranking.onnx_reranker import OnnxCrossEncoderReranker
 from nanobot.memory.write import extractor as extractor_mod
 from nanobot.providers.base import LLMResponse, ToolCallRequest
@@ -20,10 +20,8 @@ def _make_extractor() -> extractor_mod.MemoryExtractor:
     )
 
 
-def test_entity_linker_register_and_resolve_unknown() -> None:
+def test_entity_linker_resolve_unknown() -> None:
     assert resolve_alias("custom entity") == "custom entity"
-    register_alias("svc", "service")
-    assert resolve_alias(" svc ") == "service"
 
 
 def test_onnx_reranker_model_load_failure_and_graceful_fallback(
@@ -63,7 +61,6 @@ async def test_extractor_parse_and_fallback_paths() -> None:
         old_messages=old_messages,
         source_start=3,
     )
-    assert ext.last_extraction_source == "heuristic"
     assert isinstance(events, list)
     assert "I prefer" in " ".join(updates["preferences"] + updates["stable_facts"])
 
@@ -95,5 +92,4 @@ async def test_extractor_llm_tool_call_non_dict_items_and_invalid_source_span() 
         old_messages=[{"role": "user", "content": "I prefer concise output"}],
         source_start=9,
     )
-    assert ext.last_extraction_source == "llm"
     assert events and events[0]["source_span"] == [9, 9]
