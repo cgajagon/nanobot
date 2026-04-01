@@ -6,6 +6,7 @@ injection — no back-references to MemoryStore.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from ..constants import CONFLICT_STATUS_OPEN, PROFILE_STATUS_ACTIVE, PROFILE_STATUS_CONFLICTED
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from .profile_io import ProfileStore
     from .snapshot import MemorySnapshot
 
+logger = logging.getLogger(__name__)
 
 __all__ = ["CorrectionOrchestrator"]
 
@@ -203,7 +205,8 @@ class CorrectionOrchestrator:
                 question = self._conflict_mgr.ask_user_for_conflict()
 
         # Keep LLM-managed memory snapshot stable; can be regenerated on-demand.
-        self._snapshot.rebuild_memory_snapshot(write=False)
+        rebuild_result = self._snapshot.rebuild_memory_snapshot(write=False)
+        logger.debug("snapshot rebuild (dry-run): %s", rebuild_result)
         return {
             "applied": applied,
             "conflicts": conflicts,

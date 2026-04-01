@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from ._text import _norm_text, _to_str_list, _utc_now_iso
 
@@ -27,10 +27,8 @@ class MemoryMaintenance:
         self,
         *,
         db: MemoryDatabase | None = None,
-        reindex_fn: Callable[[], None] | None = None,
     ) -> None:
         self._db = db
-        self._reindex_fn = reindex_fn
 
     # ── backend stats ─────────────────────────────────────────────────
 
@@ -41,11 +39,6 @@ class MemoryMaintenance:
         else:
             event_count = 0
         return {
-            "vector_points_count": 0,
-            "vector_search_count": 0,
-            "history_rows_count": 0,
-            "vector_enabled": False,
-            "vector_mode": "disabled",
             "db_event_count": event_count,
         }
 
@@ -112,37 +105,6 @@ class MemoryMaintenance:
             "after": len(out),
             "superseded_dropped": superseded_dropped,
             "duplicates_dropped": duplicates_dropped,
-        }
-
-    def reindex_from_structured_memory(
-        self,
-        *,
-        max_events: int | None = None,
-        reset_existing: bool = False,
-        compact: bool = False,
-        read_profile_fn: Any = None,
-        read_events_fn: Any = None,
-        ingester: Any = None,
-        profile_keys: tuple[str, ...] = (
-            "preferences",
-            "stable_facts",
-            "active_projects",
-            "relationships",
-            "constraints",
-        ),
-        vector_points_count_fn: Any = None,
-        vector_rows_fn: Any = None,
-    ) -> dict[str, Any]:
-        """Full reindex from structured memory.
-
-        With MemoryDatabase, events are already in SQLite; return a no-op
-        success result.  Legacy vector reindex has been removed.
-        """
-        return {
-            "ok": True,
-            "reason": "sqlite_active",
-            "written": 0,
-            "failed": 0,
         }
 
     def seed_structured_corpus(

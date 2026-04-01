@@ -44,7 +44,6 @@ from .conflict_interaction import (
 if TYPE_CHECKING:
     from nanobot.config.memory import MemoryConfig
 
-    from ..db.connection import MemoryDatabase
     from ..persistence.profile_io import ProfileStore
 
 # ---------------------------------------------------------------------------
@@ -70,12 +69,9 @@ class ConflictManager:
         self,
         profile_store: ProfileStore | ProfileManager,
         *,
-        db: MemoryDatabase | None = None,
         memory_config: MemoryConfig | None = None,
     ) -> None:
-        # Stored as profile_mgr for backward compat with resolve_conflict_details callers.
-        self.profile_mgr = profile_store
-        self._db = db
+        self.profile_store = profile_store
         self._memory_config = memory_config
 
     # -- Shared helpers imported from .helpers --------------------------------
@@ -126,19 +122,19 @@ class ConflictManager:
         evidence_ids = [source_event_ids[0]] if source_event_ids else None
 
         for key in PROFILE_KEYS:
-            values = self.profile_mgr._to_str_list(profile.get(key))
-            seen = {self.profile_mgr._norm_text(v) for v in values}
-            for candidate in self.profile_mgr._to_str_list(updates.get(key)):
-                normalized = self.profile_mgr._norm_text(candidate)
+            values = self.profile_store._to_str_list(profile.get(key))
+            seen = {self.profile_store._norm_text(v) for v in values}
+            for candidate in self.profile_store._to_str_list(updates.get(key)):
+                normalized = self.profile_store._norm_text(candidate)
                 if not normalized:
                     continue
 
                 if normalized in seen:
                     # Existing belief — bump confidence.
-                    entry = self.profile_mgr._meta_entry(profile, key, candidate)
+                    entry = self.profile_store._meta_entry(profile, key, candidate)
                     belief_id = entry.get("id", "")
                     if belief_id:
-                        self.profile_mgr._update_belief_in_profile(
+                        self.profile_store._update_belief_in_profile(
                             profile,
                             belief_id,
                             confidence_delta=0.03,
@@ -146,7 +142,7 @@ class ConflictManager:
                             status=PROFILE_STATUS_ACTIVE,
                         )
                     else:
-                        self.profile_mgr._touch_meta_entry(
+                        self.profile_store._touch_meta_entry(
                             entry,
                             confidence_delta=0.03,
                             status=PROFILE_STATUS_ACTIVE,
@@ -161,7 +157,7 @@ class ConflictManager:
 
                 # Use _add_belief_to_profile to create the entry and append
                 # to the profile list.
-                self.profile_mgr._add_belief_to_profile(
+                self.profile_store._add_belief_to_profile(
                     profile,
                     key,
                     candidate,
@@ -171,7 +167,7 @@ class ConflictManager:
                 )
                 # Reconcile: _add_belief_to_profile appends to profile[key],
                 # keep local values/seen in sync.
-                values = self.profile_mgr._to_str_list(profile.get(key))
+                values = self.profile_store._to_str_list(profile.get(key))
                 seen.add(normalized)
 
                 has_conflict = False
@@ -179,14 +175,14 @@ class ConflictManager:
                     for existing in existing_values_snapshot:
                         if self._conflict_pair(existing, candidate):
                             has_conflict = True
-                            old_entry = self.profile_mgr._meta_entry(profile, key, existing)
-                            self.profile_mgr._touch_meta_entry(
+                            old_entry = self.profile_store._meta_entry(profile, key, existing)
+                            self.profile_store._touch_meta_entry(
                                 old_entry,
                                 confidence_delta=-0.12,
                                 status=PROFILE_STATUS_CONFLICTED,
                             )
-                            new_entry = self.profile_mgr._meta_entry(profile, key, candidate)
-                            self.profile_mgr._touch_meta_entry(
+                            new_entry = self.profile_store._meta_entry(profile, key, candidate)
+                            self.profile_store._touch_meta_entry(
                                 new_entry,
                                 confidence_delta=-0.2,
                                 min_confidence=0.35,
@@ -199,9 +195,9 @@ class ConflictManager:
                                 field=key,
                                 old=existing,
                                 new=candidate,
-                                old_memory_id=self.profile_mgr._find_belief_id_for_text(existing)
+                                old_memory_id=self.profile_store._find_belief_id_for_text(existing)
                                 or "",
-                                new_memory_id=self.profile_mgr._find_belief_id_for_text(candidate)
+                                new_memory_id=self.profile_store._find_belief_id_for_text(candidate)
                                 or "",
                                 belief_id_old=old_entry.get("id", ""),
                                 belief_id_new=new_entry.get("id", ""),
@@ -218,8 +214,8 @@ class ConflictManager:
 
                 if not has_conflict:
                     # Boost confidence for non-conflicted new beliefs.
-                    entry = self.profile_mgr._meta_entry(profile, key, candidate)
-                    self.profile_mgr._touch_meta_entry(
+                    entry = self.profile_store._meta_entry(profile, key, candidate)
+                    self.profile_store._touch_meta_entry(
                         entry,
                         confidence_delta=0.1,
                         status=PROFILE_STATUS_ACTIVE,
@@ -247,7 +243,7 @@ class ConflictManager:
     # -- public API ---------------------------------------------------------
 
     def list_conflicts(self, *, include_closed: bool = False) -> list[ConflictRecord]:
-        profile = self.profile_mgr.read_profile()
+        profile = self.profile_store.read_profile()
         conflicts = profile.get("conflicts", [])
         if not isinstance(conflicts, list):
             return []
@@ -300,7 +296,7 @@ class ConflictManager:
         return None
 
     def auto_resolve_conflicts(self, *, max_items: int = 10) -> dict[str, int]:
-        profile = self.profile_mgr.read_profile()
+        profile = self.profile_store.read_profile()
         raw_conflicts = profile.get("conflicts", [])
         if not isinstance(raw_conflicts, list):
             return {"auto_resolved": 0, "needs_user": 0}
@@ -337,7 +333,7 @@ class ConflictManager:
             needs_user += 1
 
         if touched:
-            self.profile_mgr.write_profile(profile)
+            self.profile_store.write_profile(profile)
         return {"auto_resolved": auto_resolved, "needs_user": needs_user}
 
     def get_next_user_conflict(self) -> ConflictRecord | None:
@@ -376,7 +372,7 @@ class ConflictManager:
             "db_operation": "none",
             "db_ok": False,
         }
-        profile = self.profile_mgr.read_profile()
+        profile = self.profile_store.read_profile()
         conflicts = profile.get("conflicts", [])
         if not isinstance(conflicts, list) or index < 0 or index >= len(conflicts):
             return result
@@ -393,7 +389,7 @@ class ConflictManager:
         field = str(conflict.get("field", ""))
         result["field"] = field
         try:
-            key = self.profile_mgr._validate_profile_field(field)
+            key = self.profile_store._validate_profile_field(field)
         except ValueError:
             return result
 
@@ -401,13 +397,13 @@ class ConflictManager:
         new_value = str(conflict.get("new", "")).strip()
         result["old"] = old_value
         result["new"] = new_value
-        values = self.profile_mgr._to_str_list(profile.get(key))
+        values = self.profile_store._to_str_list(profile.get(key))
         old_memory_id = str(
             conflict.get("old_memory_id", "")
-        ).strip() or self.profile_mgr._find_belief_id_for_text(old_value)
+        ).strip() or self.profile_store._find_belief_id_for_text(old_value)
         new_memory_id = str(
             conflict.get("new_memory_id", "")
-        ).strip() or self.profile_mgr._find_belief_id_for_text(new_value)
+        ).strip() or self.profile_store._find_belief_id_for_text(new_value)
         if old_memory_id:
             conflict["old_memory_id"] = old_memory_id
         if new_memory_id:
@@ -424,8 +420,8 @@ class ConflictManager:
         db_ok = False
 
         # Look up belief IDs for the old and new values.
-        old_entry = self.profile_mgr._meta_entry(profile, key, old_value)
-        new_entry = self.profile_mgr._meta_entry(profile, key, new_value)
+        old_entry = self.profile_store._meta_entry(profile, key, old_value)
+        new_entry = self.profile_store._meta_entry(profile, key, new_value)
         old_belief_id = old_entry.get("id", "")
         new_belief_id = new_entry.get("id", "")
 
@@ -434,7 +430,7 @@ class ConflictManager:
             result["db_operation"] = "none_db"
             values = _remove_value(values, new_value)
             # Boost winner confidence via update_belief.
-            self.profile_mgr._update_belief_in_profile(
+            self.profile_store._update_belief_in_profile(
                 profile,
                 old_belief_id,
                 confidence_delta=0.08,
@@ -452,7 +448,7 @@ class ConflictManager:
             result["db_operation"] = "none_db"
             values = _remove_value(values, old_value)
             # Boost winner confidence via update_belief.
-            self.profile_mgr._update_belief_in_profile(
+            self.profile_store._update_belief_in_profile(
                 profile,
                 new_belief_id,
                 confidence_delta=0.08,
@@ -468,12 +464,12 @@ class ConflictManager:
         elif selected == "dismiss":
             db_ok = True
             result["db_operation"] = "none"
-            self.profile_mgr._update_belief_in_profile(
+            self.profile_store._update_belief_in_profile(
                 profile,
                 old_belief_id,
                 status=PROFILE_STATUS_ACTIVE,
             )
-            self.profile_mgr._update_belief_in_profile(
+            self.profile_store._update_belief_in_profile(
                 profile,
                 new_belief_id,
                 status=PROFILE_STATUS_ACTIVE,
@@ -489,7 +485,7 @@ class ConflictManager:
         conflict["status"] = CONFLICT_STATUS_RESOLVED
         conflict["resolution"] = selected
         conflict["resolved_at"] = self._utc_now_iso()
-        self.profile_mgr.write_profile(profile)
+        self.profile_store.write_profile(profile)
         result["ok"] = True
         return result
 

@@ -30,17 +30,10 @@ def _store(
 
 
 class TestReindexBranches:
-    def test_reindex_returns_sqlite_active(self, tmp_path: Path) -> None:
-        """With MemoryDatabase, reindex is a no-op success."""
+    def test_reindex_method_removed(self, tmp_path: Path) -> None:
+        """reindex_from_structured_memory was a no-op stub and has been removed."""
         store = _store(tmp_path)
-        out = store.maintenance.reindex_from_structured_memory(
-            read_profile_fn=store.profile_mgr.read_profile,
-            read_events_fn=store.ingester.read_events,
-            ingester=store.ingester,
-            profile_keys=PROFILE_KEYS,
-        )
-        assert out["ok"] is True
-        assert out["reason"] == "sqlite_active"
+        assert not hasattr(store.maintenance, "reindex_from_structured_memory")
 
     def test_seed_structured_corpus_invalid_profile(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
@@ -379,7 +372,7 @@ class TestStoreCoreBranchHelpers:
         store.graph.enabled = True
         store.graph.ingest_event_triples = AsyncMock(return_value=None)
 
-        total = await store.ingester._ingest_graph_triples(
+        total = await store.ingester.ingest_graph_triples(
             [
                 MemoryEvent(
                     id="e1",

@@ -6,7 +6,6 @@ stability inference, topic defaults, and metadata normalization.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from .._text import _contains_any, _safe_float, _utc_now_iso
@@ -35,14 +34,14 @@ class EventClassifier:
         event_type: str,
         summary: str,
         source: str,
-    ) -> tuple[str, str, bool]:
-        """Determine memory_type, stability, and is_mixed flag."""
+    ) -> tuple[str, str]:
+        """Determine memory_type and stability."""
         event_kind = str(event_type or "fact").lower()
         text = str(summary or "")
         source_norm = str(source or "chat").strip().lower() or "chat"
 
         if source_norm == "reflection":
-            return "reflection", "medium", False
+            return "reflection", "medium"
 
         semantic_default = {"preference", "fact", "constraint", "relationship"}
         episodic_default = {"task", "decision"}
@@ -64,10 +63,7 @@ class EventClassifier:
             "today",
             "last time",
         )
-        causal_markers = ("because", "due to", "after", "when", "since")
         has_incident = _contains_any(text, incident_markers)
-        has_causal = _contains_any(text, causal_markers)
-        is_mixed = memory_type == "semantic" and has_incident and has_causal
 
         if memory_type == "semantic":
             stability = "high"
@@ -77,25 +73,7 @@ class EventClassifier:
             stability = "medium"
         else:
             stability = "low" if has_incident else "medium"
-        return memory_type, stability, is_mixed
-
-    @staticmethod
-    def distill_semantic_summary(summary: str) -> str:
-        """Extract the semantic core from a summary by stripping causal clauses."""
-        text = re.sub(r"\s+", " ", str(summary or "").strip())
-        if not text:
-            return ""
-        splitters = (" because ", " due to ", " after ", " when ", " since ")
-        lowered = text.lower()
-        cut = len(text)
-        for marker in splitters:
-            idx = lowered.find(marker)
-            if idx >= 0:
-                cut = min(cut, idx)
-        distilled = text[:cut].strip(" .;:-")
-        if len(distilled) < 12:
-            return text
-        return distilled
+        return memory_type, stability
 
     def normalize_memory_metadata(
         self,
@@ -104,10 +82,10 @@ class EventClassifier:
         event_type: str,
         summary: str,
         source: str,
-    ) -> tuple[dict[str, Any], bool]:
+    ) -> dict[str, Any]:
         """Enrich event metadata with classification, topic, stability, etc."""
         payload = dict(metadata or {})
-        memory_type, default_stability, is_mixed = self.classify_memory_type(
+        memory_type, default_stability = self.classify_memory_type(
             event_type=event_type,
             summary=summary,
             source=source,
@@ -154,4 +132,4 @@ class EventClassifier:
             "ttl_days": ttl_days,
             "evidence_refs": evidence_refs,
             "reflection_safety_downgraded": reflection_safety_downgraded,
-        }, is_mixed
+        }

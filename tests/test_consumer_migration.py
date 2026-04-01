@@ -118,17 +118,14 @@ class TestSnapshotDBPath:
 
 
 class TestMaintenanceDBPath:
-    def test_reindex_returns_early_with_db(self, db: MemoryDatabase, tmp_path: Path) -> None:
+    def test_reindex_method_removed(self, db: MemoryDatabase, tmp_path: Path) -> None:
         from nanobot.memory.maintenance import MemoryMaintenance
 
         maint = MemoryMaintenance(
             db=db,
         )
 
-        result = maint.reindex_from_structured_memory()
-        assert result["ok"] is True
-        assert result["reason"] == "sqlite_active"
-        assert result["written"] == 0
+        assert not hasattr(maint, "reindex_from_structured_memory")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +165,6 @@ class TestConflictsDBPath:
 
         mgr = ConflictManager(
             profile_mgr,
-            db=db,
         )
 
         result = mgr.resolve_conflict_details(0, "keep_old")
@@ -206,7 +202,6 @@ class TestConflictsDBPath:
 
         mgr = ConflictManager(
             profile_mgr,
-            db=db,
         )
 
         result = mgr.resolve_conflict_details(0, "keep_new")
@@ -312,11 +307,7 @@ class TestEvalDBPath:
         mock_retriever.retrieve = MagicMock(return_value=[])
         mock_maintenance = MagicMock()
         mock_maintenance._backend_stats_for_eval.return_value = {
-            "vector_points_count": 0,
-            "vector_search_count": 0,
-            "history_rows_count": 0,
-            "vector_enabled": False,
-            "vector_mode": "disabled",
+            "db_event_count": 0,
         }
         runner = EvalRunner(
             retriever=mock_retriever,

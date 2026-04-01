@@ -93,26 +93,6 @@ class _FakeSnapshot:
 
 
 class _FakeMaintenance:
-    def reindex_from_structured_memory(self, **kw: object) -> dict[str, object]:
-        return {
-            "ok": True,
-            "reason": "",
-            "written": 4,
-            "failed": 0,
-            "events_indexed": 2,
-            "events_before_compaction": 2,
-            "events_after_compaction": 2,
-            "events_superseded_dropped": 0,
-            "events_duplicates_dropped": 0,
-            "vector_points_after": 2,
-            "reset": {
-                "requested": True,
-                "ok": True,
-                "reason": "",
-                "deleted_estimate": 1,
-            },
-        }
-
     def seed_structured_corpus(self, **kw: object) -> dict[str, object]:
         return {
             "ok": self._parent.seeded_ok,
@@ -263,11 +243,11 @@ def test_memory_rebuild_reindex_compact(_patched: Config) -> None:
 
     reindex = runner.invoke(app, ["memory", "reindex", "--max-events", "5", "--no-reset"])
     assert reindex.exit_code == 0
-    assert "Memory Reindex" in reindex.stdout
+    assert "no-op" in reindex.stdout
 
     compact = runner.invoke(app, ["memory", "compact", "--max-events", "5", "--reset"])
     assert compact.exit_code == 0
-    assert "Memory Compaction" in compact.stdout
+    assert "no-op" in compact.stdout
 
 
 def test_memory_verify_and_conflicts(_patched: Config) -> None:

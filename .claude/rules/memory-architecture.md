@@ -761,44 +761,49 @@ Other tools contribute indirectly via tool hints that become provenance strings.
 
 ### Performance
 
-| Issue | Location | Impact |
-|-------|----------|--------|
-| `TokenBudgetAllocator` ignores config | `store.py` line 119 TODO | `memory_section_weights` not wired |
-
 **Resolved (PR#122):** Full table scan in `append_events()` replaced with targeted
 PK lookup + FTS5 pre-filtering. Missing indexes on `events` and `edges` tables added.
 
+**Resolved:** `TokenBudgetAllocator` now reads `section_weights` from `MemoryConfig`.
+
 ### Dead Code and Unused Parameters
 
-| Item | Location | Notes |
-|------|----------|-------|
-| `vector_backend` parameter | `MemoryStore.__init__` | **Removed** |
-| `embedding_provider` parameter | `MemoryRetriever.retrieve()` | Accepted but never used |
-| `recency_half_life_days` parameter | `MemoryRetriever.retrieve()` | Accepted but never forwarded |
-| `EventIngester._embedder` | `ingester.py` | Stored but unused; embeddings always `None` |
-| `ConflictManager._db` | `conflicts.py` | Stored but never used in any method |
-| `MemoryExtractor.last_extraction_source` | `extractor.py` | **Removed** |
-| `EventClassifier.distill_semantic_summary` | `classification.py` | Defined but never called in write path |
-| `is_mixed` return from `classify_memory_type` | `classification.py` | Always discarded by callers |
-| `register_alias()` | `entity_linker.py` | **Removed** |
-| `_keywords.py` module | `graph/_keywords.py` | **Removed** |
-| `_backend_stats_for_eval()` | `maintenance.py` | Returns hardcoded zeros |
-| `reindex_from_structured_memory()` | `maintenance.py` | Returns hardcoded success without doing work |
+All items resolved. Previous items and their resolution:
+
+| Item | Resolution |
+|------|-----------|
+| `vector_backend` parameter | **Removed** (prior) |
+| `embedding_provider` parameter | **Removed** — never used in retriever chain |
+| `recency_half_life_days` parameter | **Removed** — accepted but never forwarded to scorer |
+| `EventIngester._embedder` | **Removed** — stored but unused; embeddings always `None` |
+| `ConflictManager._db` | **Removed** — stored but never used in any method |
+| `MemoryExtractor.last_extraction_source` | **Removed** (prior) |
+| `EventClassifier.distill_semantic_summary` | **Removed** — zero callers |
+| `is_mixed` return from `classify_memory_type` | **Removed** — always discarded by callers |
+| `register_alias()` | **Removed** (prior) |
+| `_keywords.py` module | **Removed** (prior) |
+| `_backend_stats_for_eval()` | **Cleaned** — removed hardcoded vector zeros, kept `db_event_count` |
+| `reindex_from_structured_memory()` | **Removed** — CLI commands now print no-op message |
 
 ### Design Issues
 
 | Issue | Location | Notes |
 |-------|----------|-------|
-| Post-construction wiring | `store.py` lines ~97, ~112 | ProfileStore has None fields between construction and set_* calls |
-| Private method cross-call | `consolidation_pipeline.py` line 222 | Calls `_ingest_graph_triples()` — private method of EventIngester |
-| Encapsulation leak | `retriever.py` line 136 | Accesses `_graph_aug._read_events_fn` — private attribute of collaborator |
-| `compute_rank_delta` result discarded | `scoring.py` lines 410-412 | Shadow mode computes delta but never logs or stores it |
-| Snapshot rebuild discarded | `profile_correction.py` | `rebuild_memory_snapshot(write=False)` result not captured |
-| `EventStore.search_by_metadata` naming | `event_store.py` | `memory_type` parameter filters on `type` column, not memory_type |
-| Schema coupling via reference | `constants.py` | `_CONSOLIDATE_MEMORY_TOOL` shares sub-schema objects with `_SAVE_EVENTS_TOOL` by Python reference |
-| Backward-compat naming | `conflicts.py` line 77 | `profile_mgr` attribute name documented as backward-compat (violates prohibited-patterns) |
-| `_norm` duplication | `graph.py` + `graph_traversal.py` | Same function defined in two files |
-| `_db` in Protocol | `graph_traversal.py` | `_KnowledgeGraphProtocol` exposes private attribute in interface |
+| Post-construction wiring | `store.py` lines ~97, ~112 | Now uses Protocols; properly documented |
+
+All other items resolved:
+
+| Item | Resolution |
+|------|-----------|
+| Private method cross-call | **Fixed** — `ingest_graph_triples()` made public on `EventIngester` |
+| Encapsulation leak | **Fixed** — `GraphAugmenter.read_events()` public method added |
+| `compute_rank_delta` discarded | **Fixed** — result now logged at DEBUG level |
+| Snapshot rebuild discarded | **Fixed** — result now logged at DEBUG level |
+| `search_by_metadata` naming | **Fixed** — param renamed from `memory_type` to `event_type` |
+| Schema coupling via reference | **Fixed** — `copy.deepcopy()` isolates tool schemas |
+| `profile_mgr` backward-compat | **Fixed** — renamed to `profile_store` throughout |
+| `_norm` duplication | **Fixed** — single definition in `graph/__init__.py`, imported by both |
+| `_db` in Protocol | **Fixed** — `KnowledgeGraph` exposes `get_entity_row()`, `get_edges_from()`, `get_edges_to()` public methods; protocol uses those instead of `_db` |
 
 ---
 

@@ -116,13 +116,24 @@ class MemoryStore:
         # Retrieval planner (LAN-207) — intent classification + policy + routing.
         self._planner = RetrievalPlanner()
 
-        # TODO: pass config.memory_section_weights when MemoryStore receives config
-        self._budget_allocator = TokenBudgetAllocator(DEFAULT_SECTION_WEIGHTS)
+        # Wire config section_weights into the budget allocator, falling back
+        # to DEFAULT_SECTION_WEIGHTS when no overrides are provided.
+        cfg_weights = self._memory_config.section_weights
+        if cfg_weights:
+            merged = dict(DEFAULT_SECTION_WEIGHTS)
+            for intent, sw in cfg_weights.items():
+                overrides = {k: v for k, v in sw.model_dump().items() if v > 0}
+                base = dict(DEFAULT_SECTION_WEIGHTS.get(intent, {}))
+                base.update(overrides)
+                merged[intent] = base
+            weights = merged
+        else:
+            weights = DEFAULT_SECTION_WEIGHTS
+        self._budget_allocator = TokenBudgetAllocator(weights)
 
         # MemoryMaintenance: reindex, seed, health checks, backend stats.
         self.maintenance = MemoryMaintenance(
             db=self.db,
-            reindex_fn=self._reindex_callback,
         )
 
         # Cross-encoder re-ranker (Step 7)
@@ -155,14 +166,12 @@ class MemoryStore:
             dedup=self._dedup,
             graph=self.graph,
             db=self.db.event_store,
-            embedder=self._embedder,
         )
 
         # Conflict manager — now wire into ProfileStore (circular dep resolved
         # via post-construction wiring instead of lambda callbacks).
         self.conflict_mgr = ConflictManager(
             self.profile_mgr,
-            db=self.db,
             memory_config=self._memory_config,
         )
         self.profile_mgr.set_conflict_mgr(self.conflict_mgr)
@@ -263,15 +272,6 @@ class MemoryStore:
             )
         return self._eval_runner
 
-    def _reindex_callback(self) -> None:
-        """Void-typed wrapper for MemoryMaintenance.reindex_fn."""
-        self.maintenance.reindex_from_structured_memory(
-            read_profile_fn=self.profile_mgr.read_profile,
-            read_events_fn=self.ingester.read_events,
-            ingester=self.ingester,
-            profile_keys=PROFILE_KEYS,
-        )
-
     # ------------------------------------------------------------------
     # get_memory_context — facade method
     # ------------------------------------------------------------------
@@ -284,8 +284,6 @@ class MemoryStore:
         token_budget: int = 900,
         memory_md_token_cap: int = 1500,
         mode: str | None = None,
-        recency_half_life_days: float | None = None,
-        embedding_provider: str | None = None,
     ) -> str:
         return await self._assembler.build(
             query=query,
@@ -293,8 +291,6 @@ class MemoryStore:
             token_budget=token_budget,
             memory_md_token_cap=memory_md_token_cap,
             mode=mode,
-            recency_half_life_days=recency_half_life_days,
-            embedding_provider=embedding_provider,
         )
 
     # ------------------------------------------------------------------

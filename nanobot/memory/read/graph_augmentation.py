@@ -33,6 +33,10 @@ class GraphAugmenter:
         self._read_events_fn = read_events_fn
         self._graph_cache: dict[frozenset[str], set[str]] = {}
 
+    def read_events(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Public accessor for the read-events callable."""
+        return self._read_events_fn(**kwargs)
+
     def reset_cache(self) -> None:
         """Clear the per-request graph entity cache."""
         self._graph_cache = {}

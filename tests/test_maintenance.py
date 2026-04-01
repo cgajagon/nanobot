@@ -19,8 +19,7 @@ class TestBackendStats:
         maint = _make_maintenance(tmp_path)
         stats = maint._backend_stats_for_eval()
         assert isinstance(stats, dict)
-        assert "vector_points_count" in stats
-        assert "vector_enabled" in stats
+        assert "db_event_count" in stats
 
 
 class TestEnsureHealth:
@@ -30,12 +29,10 @@ class TestEnsureHealth:
         await maint.ensure_health()
 
 
-class TestReindexReturnsNoOp:
-    def test_reindex_returns_sqlite_active(self, tmp_path: Path) -> None:
+class TestReindexRemoved:
+    def test_reindex_method_removed(self, tmp_path: Path) -> None:
         maint = _make_maintenance(tmp_path)
-        result = maint.reindex_from_structured_memory()
-        assert result["ok"] is True
-        assert result["reason"] == "sqlite_active"
+        assert not hasattr(maint, "reindex_from_structured_memory")
 
 
 class TestCompactEvents:

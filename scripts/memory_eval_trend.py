@@ -259,8 +259,6 @@ def main() -> int:
         store.eval_runner.evaluate_retrieval_cases(
             cases,
             default_top_k=max(1, int(args.top_k)),
-            recency_half_life_days=30.0,
-            embedding_provider=args.embedding_provider,
         )
     )
     observability = store.eval_runner.get_observability_report()

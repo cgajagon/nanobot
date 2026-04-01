@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Protocol
 
+from . import _norm
+
 __all__ = ["find_paths", "query_subgraph"]
 
 
@@ -16,7 +18,15 @@ class _KnowledgeGraphProtocol(Protocol):
     """Structural type for KnowledgeGraph methods used by traversal functions."""
 
     enabled: bool
-    _db: Any  # GraphStore — only accessed for get_entity, get_edges_from, get_edges_to
+
+    def get_entity_row(self, canonical: str) -> dict[str, Any] | None:
+        """Return raw entity row by canonical name, or None."""
+
+    def get_edges_from(self, source: str) -> list[dict[str, Any]]:
+        """Return outgoing edges from the given canonical source."""
+
+    def get_edges_to(self, target: str) -> list[dict[str, Any]]:
+        """Return incoming edges to the given canonical target."""
 
     def _get_display_name(self, canonical: str) -> str:
         """Return the human-readable display name for a canonical entity key."""
@@ -25,11 +35,6 @@ class _KnowledgeGraphProtocol(Protocol):
         self, entity_name: str, depth: int = 1, relation_types: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Return edges connecting to neighbors within the given depth."""
-
-
-def _norm(name: str) -> str:
-    """Canonical name normalisation: strip, lower, spaces to underscores."""
-    return name.strip().lower().replace(" ", "_")
 
 
 def find_paths(
@@ -43,13 +48,13 @@ def find_paths(
     Returns up to 5 shortest paths.  Each path is a list of edge dicts
     with ``source``, ``relation``, and ``target`` keys (display names).
     """
-    if not graph.enabled or graph._db is None:
+    if not graph.enabled:
         return []
     src = _norm(source)
     tgt = _norm(target)
     max_depth = max(1, min(max_depth, 5))
 
-    if graph._db.get_entity(src) is None or graph._db.get_entity(tgt) is None:
+    if graph.get_entity_row(src) is None or graph.get_entity_row(tgt) is None:
         return []
 
     # Display-name cache
@@ -62,12 +67,10 @@ def find_paths(
 
     def _edge_rel(n1: str, n2: str) -> str:
         """Find the relation between two adjacent canonical nodes."""
-        if graph._db is None:
-            raise RuntimeError("graph._db not initialized")
-        for e in graph._db.get_edges_from(n1):
+        for e in graph.get_edges_from(n1):
             if e["target"] == n2:
                 return str(e["relation"])
-        for e in graph._db.get_edges_from(n2):
+        for e in graph.get_edges_from(n2):
             if e["target"] == n1:
                 return str(e["relation"])
         return ""
@@ -92,7 +95,7 @@ def find_paths(
             continue
 
         # Outgoing edges
-        for edge in graph._db.get_edges_from(current):
+        for edge in graph.get_edges_from(current):
             neighbor = edge["target"]
             if neighbor in path:
                 continue
@@ -103,7 +106,7 @@ def find_paths(
                 queue.append(new_path)
 
         # Incoming edges (undirected traversal)
-        for edge in graph._db.get_edges_to(current):
+        for edge in graph.get_edges_to(current):
             neighbor = edge["source"]
             if neighbor in path:
                 continue

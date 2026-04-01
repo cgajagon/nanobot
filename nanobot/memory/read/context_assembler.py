@@ -39,8 +39,6 @@ class _Retriever(Protocol):
         query: str,
         *,
         top_k: int = 6,
-        recency_half_life_days: float | None = None,
-        embedding_provider: str | None = None,
     ) -> list[RetrievedMemory]:
         """Retrieve memory items matching *query*."""
 
@@ -126,8 +124,6 @@ class ContextAssembler:
         token_budget: int = 900,
         memory_md_token_cap: int = 1500,
         mode: str | None = None,
-        recency_half_life_days: float | None = None,
-        embedding_provider: str | None = None,
     ) -> str:
         """Assemble a Markdown memory-context string.
 
@@ -152,8 +148,6 @@ class ContextAssembler:
             retrieved = await self._retriever.retrieve(
                 query or "",
                 top_k=retrieval_k,
-                recency_half_life_days=recency_half_life_days,
-                embedding_provider=embedding_provider,
             )
         except Exception:  # crash-barrier: multi-subsystem retrieval pipeline
             logger.warning("Memory retrieval failed; continuing with local data only")

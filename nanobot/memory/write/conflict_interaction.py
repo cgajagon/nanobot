@@ -26,7 +26,7 @@ __all__ = [
 class _ConflictManagerProtocol(Protocol):
     """Structural type for ConflictManager methods used by interaction functions."""
 
-    profile_mgr: Any  # ProfileStore — only read_profile/write_profile used
+    profile_store: Any  # ProfileStore — only read_profile/write_profile used
 
     def list_conflicts(self, *, include_closed: bool = False) -> list[ConflictRecord]:
         """Return conflict records, optionally including closed ones."""
@@ -105,7 +105,7 @@ def ask_user_for_conflict(
     user_message: str = "",
 ) -> str | None:
     """Format and return a user-facing conflict prompt, or None."""
-    profile = mgr.profile_mgr.read_profile()
+    profile = mgr.profile_store.read_profile()
     conflicts = profile.get("conflicts", [])
     if not isinstance(conflicts, list):
         return None
@@ -136,7 +136,7 @@ def ask_user_for_conflict(
     if not chosen.asked_at:
         # Write asked_at back to the raw profile dict.
         conflicts[chosen_idx]["asked_at"] = _utc_now_iso()
-        mgr.profile_mgr.write_profile(profile)
+        mgr.profile_store.write_profile(profile)
 
     old_value = chosen.old.strip()
     new_value = chosen.new.strip()

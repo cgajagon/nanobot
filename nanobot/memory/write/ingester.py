@@ -23,7 +23,6 @@ from ..event import MemoryEvent, memory_type_for_item
 
 if TYPE_CHECKING:
     from ..db.event_store import EventStore
-    from ..embedder import Embedder
     from ..graph.graph import KnowledgeGraph
     from .coercion import EventCoercer
     from .dedup import EventDeduplicator
@@ -39,13 +38,11 @@ class EventIngester:
         dedup: EventDeduplicator,
         graph: KnowledgeGraph | None,
         db: EventStore | None = None,
-        embedder: Embedder | None = None,
     ) -> None:
         self._coercer = coercer
         self._dedup = dedup
         self._graph = graph
         self._db = db
-        self._embedder = embedder
 
     def read_events(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Read events from EventStore.
@@ -256,7 +253,7 @@ class EventIngester:
             evt_copy.setdefault("created_at", evt_copy.get("timestamp", _utc_now_iso()))
             self._db.insert_event(evt_copy, embedding=None)
 
-    async def _ingest_graph_triples(self, events: list[MemoryEvent]) -> int:
+    async def ingest_graph_triples(self, events: list[MemoryEvent]) -> int:
         """Feed triples from events into the knowledge graph (async).
 
         Returns the number of triples ingested.  No-op when graph is disabled.

@@ -219,7 +219,7 @@ class ConsolidationPipeline:
 
         # -- Apply results (same as two-call path) --
         events_written = self._ingester.append_events(events)
-        await self._ingester._ingest_graph_triples(events)
+        await self._ingester.ingest_graph_triples(events)
 
         event_ids = [e.id for e in events if e.id]
         profile = self._profile_mgr.read_profile()

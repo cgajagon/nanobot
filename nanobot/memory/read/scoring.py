@@ -8,6 +8,7 @@ and type boosts, and cross-encoder re-ranking delegation.
 from __future__ import annotations
 
 import copy
+import logging
 from typing import TYPE_CHECKING, Any
 
 from .._text import _contains_any, _norm_text
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from ..persistence.profile_io import ProfileStore as ProfileManager
     from ..ranking.reranker import Reranker
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-private helpers and constants
@@ -408,6 +410,6 @@ class RetrievalScorer:
         shadow_items = self._reranker.rerank(query, shadow_items)
         heuristic_ids = [str(it.get("id", "")) for it in items]
         reranked_ids = [str(it.get("id", "")) for it in shadow_items]
-        # Rank delta computed for observability logging; result intentionally unused.
-        self._reranker.compute_rank_delta(heuristic_ids, reranked_ids)
+        delta = self._reranker.compute_rank_delta(heuristic_ids, reranked_ids)
+        logger.debug("shadow rerank delta: %.3f", delta)
         return items

@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from nanobot.config.memory import MemoryConfig
-from nanobot.memory.constants import PROFILE_KEYS
-from nanobot.memory.event import MemoryEvent
 from nanobot.memory.store import MemoryStore
 
 
@@ -77,29 +75,7 @@ def test_rollout_override_atomic_consistency(tmp_path):
     assert scorer_config is store._memory_config
 
 
-def test_maintenance_reindex_runs_without_error(tmp_path):
-    """MemoryMaintenance.reindex runs without AttributeError (all deps wired)."""
+def test_maintenance_reindex_removed(tmp_path):
+    """reindex_from_structured_memory was a no-op stub and has been removed."""
     store = _make_store(tmp_path)
-    store.ingester.append_events(
-        [
-            MemoryEvent.from_dict(
-                {
-                    "type": "fact",
-                    "summary": "Test fact for reindex.",
-                    "timestamp": "2026-03-01T10:00:00+00:00",
-                    "source": "test",
-                }
-            )
-        ]
-    )
-    try:
-        store.maintenance.reindex_from_structured_memory(
-            read_profile_fn=store.profile_mgr.read_profile,
-            read_events_fn=store.ingester.read_events,
-            ingester=store.ingester,
-            profile_keys=PROFILE_KEYS,
-        )
-    except Exception as e:
-        # reindex may fail for other reasons in test context, but must NOT
-        # fail with AttributeError from missing wiring
-        assert not isinstance(e, AttributeError), f"Wiring error: {e}"
+    assert not hasattr(store.maintenance, "reindex_from_structured_memory")
