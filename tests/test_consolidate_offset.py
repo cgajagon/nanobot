@@ -599,7 +599,7 @@ class TestConsolidationDeduplicationGuard:
             first_release.set()  # let first consolidation finish
             await second_started.wait()  # second consolidation is in-flight
             second_release.set()  # let second finish
-            await pending_new
+            _ = await pending_new
 
         assert consolidation_calls == 2, (
             f"Expected normal + /new consolidations, got {consolidation_calls}"
