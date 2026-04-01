@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from loguru import logger
 
-from .._text import _estimate_tokens, _norm_text, _safe_float, _to_str_list
+from .._text import (
+    _estimate_tokens,
+    _norm_text,
+    _safe_float,
+    _sanitize_for_prompt,
+    _to_str_list,
+)
 from ..constants import EPISODIC_STATUS_RESOLVED, PROFILE_KEYS, PROFILE_STATUS_STALE
 from ..event import is_resolved_task_or_decision
 from ..persistence.profile_io import ProfileStore as ProfileManager
@@ -204,7 +210,8 @@ class ContextAssembler:
             for item in unresolved:
                 ts = str(item.get("timestamp", ""))[:16]
                 raw_unresolved.append(
-                    f"- [{ts}] ({item.get('type', 'task')}) {item.get('summary', '')}"
+                    f"- [{ts}] ({item.get('type', 'task')}) "
+                    f"{_sanitize_for_prompt(str(item.get('summary', '')))}"
                 )
 
         # ── Phase 2: measure raw sizes and allocate budget ──
@@ -393,7 +400,7 @@ class ContextAssembler:
             lines.append(f"### {title_map[key]}")
             for item, confidence, pin_rank in scored_values[:max_items_per_section]:
                 pin_suffix = " \U0001f4cc" if pin_rank else ""
-                lines.append(f"- {item} (conf={confidence:.2f}){pin_suffix}")
+                lines.append(f"- {_sanitize_for_prompt(item)} (conf={confidence:.2f}){pin_suffix}")
             lines.append("")
         return lines
 
@@ -424,8 +431,9 @@ class ContextAssembler:
             type_label = f"{item.type}, from: {source}"
         else:
             type_label = item.type
+        summary = _sanitize_for_prompt(item.summary)
         return (
-            f"- [{item.timestamp[:16]}] ({type_label}) {item.summary} "
+            f"- [{item.timestamp[:16]}] ({type_label}) {summary} "
             f"[sem={item.scores.semantic:.2f}, "
             f"rec={item.scores.recency:.2f}]"
         )

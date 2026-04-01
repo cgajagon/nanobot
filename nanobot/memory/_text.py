@@ -91,3 +91,34 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     """Return ``True`` if *text* contains any of the *needles* (case-insensitive)."""
     lowered = str(text or "").lower()
     return any(needle in lowered for needle in needles)
+
+
+# ---------------------------------------------------------------------------
+# Prompt injection sanitization
+# ---------------------------------------------------------------------------
+
+_INJECTION_PATTERNS = re.compile(
+    r"(?i)(ignore\s+(?:all\s+)?previous\s+instructions|"
+    r"you\s+are\s+now\s+a|"
+    r"new\s+system\s+prompt|"
+    r"override\s+instructions|"
+    r"\[system\]|\[instruction\])",
+)
+
+
+def _sanitize_for_prompt(text: str) -> str:
+    """Escape text that will be injected into LLM prompts.
+
+    Strips patterns commonly used in prompt injection attacks:
+    system-instruction overrides, role declarations, and markdown
+    that could break prompt structure.
+    """
+    # Remove lines that look like system instruction overrides
+    text = _INJECTION_PATTERNS.sub("[filtered]", text)
+    # Escape markdown heading markers that could break prompt sections
+    text = re.sub(r"^(#{1,4})\s", r"\\\1 ", text, flags=re.MULTILINE)
+    # Escape triple-backtick code fences
+    text = text.replace("```", "\\`\\`\\`")
+    # Escape horizontal rules that could visually separate sections
+    text = re.sub(r"^---+\s*$", "\\---", text, flags=re.MULTILINE)
+    return text
