@@ -60,18 +60,35 @@ class MemoryRetriever:
         *,
         top_k: int = 6,
     ) -> list[RetrievedMemory]:
+        from nanobot.observability.langfuse import retriever_span
+
         self._graph_aug.reset_cache()
         t0 = time.monotonic()
 
-        # Unified path: vector + FTS5 + RRF when db and embedder are injected
-        if self._db is not None and self._embedder is not None:
-            return await self._retrieve_unified(
-                query,
-                top_k=top_k,
-                t0=t0,
-            )
+        async with retriever_span(
+            name="memory_retrieve",
+            input={"query": query, "top_k": top_k},
+        ) as obs:
+            # Unified path: vector + FTS5 + RRF when db and embedder are injected
+            if self._db is not None and self._embedder is not None:
+                results = await self._retrieve_unified(
+                    query,
+                    top_k=top_k,
+                    t0=t0,
+                )
+            else:
+                results = []
 
-        return []
+            if obs is not None:
+                obs.update(
+                    output=f"{len(results)} results",
+                    metadata={
+                        "result_count": len(results),
+                        "duration_ms": round((time.monotonic() - t0) * 1000),
+                    },
+                )
+
+            return results
 
     # ------------------------------------------------------------------
     # Unified path (vector + FTS5 + RRF)
