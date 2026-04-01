@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from nanobot.memory.embedder import HashEmbedder, LocalEmbedder
 
+_ort_available = LocalEmbedder().available
 
+
+@pytest.mark.skipif(not _ort_available, reason="onnxruntime not available")
 class TestLocalEmbedder:
     def test_available_is_true(self):
         e = LocalEmbedder()
