@@ -58,7 +58,7 @@ multi-channel messaging.
 errors.py, utils/, metrics.py  ← imported by all
 config/                        ← imported by agent/, channels/, cli/, cron/
 bus/events.py                  ← imported by agent/, channels/
-providers/base.py              ← imported by agent/ (via Protocol)
+providers/base.py              ← imported by agent/ (via Protocol), observability/
 session/                       ← imported by agent/
 observability/                 ← imported by agent/, coordination/, memory/, tools/
 context/                       ← imported by agent/, coordination/, memory/, tools/
