@@ -80,7 +80,7 @@ class TestMicroExtractor:
     async def test_submit_when_disabled_does_nothing(self):
         ext = self._make_extractor(enabled=False)
         await ext.submit("hello", "hi there")
-        await asyncio.sleep(0.05)
+        # No pending tasks when disabled — just verify
         self.provider.chat.assert_not_called()
 
     @pytest.mark.asyncio
@@ -92,7 +92,7 @@ class TestMicroExtractor:
         self.provider.chat = AsyncMock(return_value=_make_tool_response(events))
         ext = self._make_extractor()
         await ext.submit("I work on DS10540 with Alice", "Got it!")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
         self.ingester.append_events.assert_called_once()
         written = self.ingester.append_events.call_args[0][0]
         assert len(written) == 2
@@ -103,7 +103,7 @@ class TestMicroExtractor:
         self.provider.chat = AsyncMock(return_value=_make_tool_response([]))
         ext = self._make_extractor()
         await ext.submit("ok thanks", "You're welcome!")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
         self.ingester.append_events.assert_not_called()
 
     @pytest.mark.asyncio
@@ -111,7 +111,7 @@ class TestMicroExtractor:
         self.provider.chat = AsyncMock(return_value=_make_text_response("Nothing to save."))
         ext = self._make_extractor()
         await ext.submit("ok thanks", "You're welcome!")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
         self.ingester.append_events.assert_not_called()
 
     @pytest.mark.asyncio
@@ -132,7 +132,7 @@ class TestMicroExtractor:
         self.provider.chat = AsyncMock(side_effect=RuntimeError("API down"))
         ext = self._make_extractor()
         await ext.submit("test", "test")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks, return_exceptions=True)
         self.ingester.append_events.assert_not_called()
 
     @pytest.mark.asyncio
@@ -143,7 +143,7 @@ class TestMicroExtractor:
         self.ingester.append_events = MagicMock(side_effect=RuntimeError("DB error"))
         ext = self._make_extractor()
         await ext.submit("test", "test")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks, return_exceptions=True)
         self.ingester.append_events.assert_called_once()
 
     @pytest.mark.asyncio
@@ -159,7 +159,7 @@ class TestMicroExtractor:
         self.provider.chat = AsyncMock(return_value=resp)
         ext = self._make_extractor()
         await ext.submit("I like Python", "Noted!")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
         self.ingester.append_events.assert_called_once()
         written = self.ingester.append_events.call_args[0][0]
         assert written[0].summary == "User likes Python"

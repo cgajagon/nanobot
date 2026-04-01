@@ -152,7 +152,7 @@ class TestMicroExtractorProvenance:
             tool_hints=["exec:obsidian", "read_file"],
             turn_timestamp="2026-03-31T14:30:00",
         )
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
 
         self.ingester.append_events.assert_called_once()
         written = self.ingester.append_events.call_args[0][0]
@@ -168,7 +168,7 @@ class TestMicroExtractorProvenance:
         ext = self._make_extractor()
 
         await ext.submit("hello", "hi")
-        await asyncio.sleep(0.1)
+        await asyncio.gather(*ext._pending_tasks)
 
         self.ingester.append_events.assert_called_once()
         written = self.ingester.append_events.call_args[0][0]
