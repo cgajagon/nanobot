@@ -73,3 +73,24 @@ class ThreadListResponse(BaseModel):
     """Response from the thread list endpoint."""
 
     threads: list[ThreadInfo]
+
+
+class ThreadMessageContent(BaseModel):
+    """A content part in a thread message (assistant-ui format)."""
+
+    type: str = "text"
+    text: str = ""
+
+
+class ThreadMessageItem(BaseModel):
+    """A user-visible message in assistant-ui ThreadMessageLike format."""
+
+    id: str
+    role: str
+    content: list[ThreadMessageContent]
+
+
+class ThreadMessagesResponse(BaseModel):
+    """Response from the thread messages endpoint."""
+
+    messages: list[ThreadMessageItem]
