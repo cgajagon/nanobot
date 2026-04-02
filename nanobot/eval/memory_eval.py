@@ -377,5 +377,4 @@ class EvalRunner:
         return {
             "passed": all(bool(item["passed"]) for item in checks),
             "checks": checks,
-            "rollout_mode": mc.rollout_mode,
         }

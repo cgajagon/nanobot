@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -28,7 +28,7 @@ class MemorySectionWeights(Base):
 class RerankerConfig(Base):
     """Cross-encoder re-ranker tuning."""
 
-    mode: str = "enabled"  # enabled | shadow | disabled
+    mode: Literal["enabled", "disabled"] = "enabled"
     alpha: float = 0.5  # Blend weight 0.0-1.0
     model: str = "onnx:ms-marco-MiniLM-L-6-v2"
 
@@ -54,13 +54,10 @@ class MemoryConfig(Base):
     enable_contradiction_check: bool = True
     conflict_auto_resolve_gap: float = 0.25
 
-    # Rollout feature flags
-    rollout_mode: str = "enabled"  # enabled | shadow | disabled
+    # Feature flags
     type_separation_enabled: bool = True
     router_enabled: bool = True
     reflection_enabled: bool = True
-    shadow_mode: bool = False
-    shadow_sample_rate: float = 0.2
     vector_health_enabled: bool = True
     auto_reindex_on_empty_vector: bool = True
     history_fallback_enabled: bool = False
@@ -95,7 +92,6 @@ class MemoryConfig(Base):
     def rollout_status(self) -> dict[str, Any]:
         """Return a snapshot of rollout-relevant fields for reporting."""
         return {
-            "rollout_mode": self.rollout_mode,
             "type_separation_enabled": self.type_separation_enabled,
             "router_enabled": self.router_enabled,
             "reflection_enabled": self.reflection_enabled,
