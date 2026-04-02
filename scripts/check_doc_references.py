@@ -23,6 +23,7 @@ LIVING_DOCS = [
     "CLAUDE.md",
     ".claude/rules/architecture.md",
     ".claude/rules/cognitive-architecture.md",
+    ".claude/rules/memory-architecture.md",
     "docs/memory-system-reference.md",
     "docs/deployment.md",
 ]
@@ -121,25 +122,17 @@ def find_file_paths_in_doc(doc_path: Path) -> set[str]:
 
 
 def class_exists_in_codebase(class_name: str, search_dir: Path) -> bool:
-    """Check if a class definition exists anywhere in nanobot/."""
-    try:
-        result = subprocess.run(
-            ["grep", "-r", f"class {class_name}", str(search_dir), "--include=*.py", "-l"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        return bool(result.stdout.strip())
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fallback: manual search
-        for py_file in search_dir.rglob("*.py"):
-            try:
-                content = py_file.read_text(encoding="utf-8")
-                if f"class {class_name}" in content:
-                    return True
-            except (OSError, UnicodeDecodeError):
-                continue
-        return False
+    """Check if a class or type alias definition exists anywhere in nanobot/."""
+    # Search for class definitions and type alias assignments (e.g. EventType = Literal[...])
+    patterns = [f"class {class_name}", f"{class_name} = "]
+    for py_file in search_dir.rglob("*.py"):
+        try:
+            content = py_file.read_text(encoding="utf-8")
+            if any(pattern in content for pattern in patterns):
+                return True
+        except (OSError, UnicodeDecodeError):
+            continue
+    return False
 
 
 def file_path_exists(file_path: str, project_root: Path) -> bool:
