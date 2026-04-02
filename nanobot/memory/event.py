@@ -158,7 +158,7 @@ class MemoryEvent(BaseModel):
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to the dict format used by persistence/retrieval."""
-        d = self.model_dump(mode="python")
+        d: dict[str, Any] = self.model_dump(mode="python")
         # Convert KnowledgeTriple models to plain dicts
         d["triples"] = [t.model_dump(mode="python") for t in self.triples]
         return d
@@ -176,4 +176,5 @@ class MemoryEvent(BaseModel):
         valid_types = {"preference", "fact", "task", "decision", "constraint", "relationship"}
         if raw_type not in valid_types:
             data = {**data, "type": "fact"}
-        return cls.model_validate(data)
+        result: MemoryEvent = cls.model_validate(data)
+        return result

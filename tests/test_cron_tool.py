@@ -96,9 +96,16 @@ class TestCronToolExecute:
         assert "no" in result.output.lower()
 
     async def test_list_with_jobs(self, cron_tool: CronTool):
-        job = MagicMock(id="j1")
-        job.name = "reminder"
-        job.schedule.kind = "every"
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j1",
+            name="reminder",
+            enabled=True,
+            schedule=CronSchedule(kind="every", every_ms=60000),
+            payload=CronPayload(message="remind me"),
+            state=CronJobState(),
+        )
         cron_tool._cron.list_jobs.return_value = [job]
         result = await cron_tool.execute(action="list")
         assert result.success
@@ -125,11 +132,23 @@ class _FakeCron:
         self.jobs: dict[str, SimpleNamespace] = {}
 
     def add_job(self, **kwargs):
-        job = SimpleNamespace(id="job-1", name=kwargs["name"], schedule=kwargs["schedule"])
+        state = SimpleNamespace(
+            last_run_at_ms=None,
+            next_run_at_ms=None,
+            last_status=None,
+            last_error=None,
+        )
+        job = SimpleNamespace(
+            id="job-1",
+            name=kwargs["name"],
+            schedule=kwargs["schedule"],
+            enabled=True,
+            state=state,
+        )
         self.jobs[job.id] = job
         return job
 
-    def list_jobs(self):
+    def list_jobs(self, include_disabled: bool = False):
         return list(self.jobs.values())
 
     def remove_job(self, job_id: str) -> bool:
@@ -168,6 +187,133 @@ def test_cron_tool_add_list_remove_success() -> None:
 
     removed = tool._remove_job("job-1")
     assert removed.success
+
+
+class TestCronToolEnableDisable:
+    async def test_enable_success(self, cron_tool: CronTool):
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "reminder"
+        cron_tool._cron.enable_job.return_value = mock_job
+        result = await cron_tool.execute(action="enable", job_id="j1")
+        assert result.success
+        assert "enabled" in result.output
+        cron_tool._cron.enable_job.assert_called_once_with("j1", enabled=True)
+
+    async def test_disable_success(self, cron_tool: CronTool):
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "reminder"
+        cron_tool._cron.enable_job.return_value = mock_job
+        result = await cron_tool.execute(action="disable", job_id="j1")
+        assert result.success
+        assert "disabled" in result.output
+        cron_tool._cron.enable_job.assert_called_once_with("j1", enabled=False)
+
+    async def test_enable_missing_job_id(self, cron_tool: CronTool):
+        result = await cron_tool.execute(action="enable")
+        assert not result.success
+        assert "job_id" in result.output.lower()
+
+    async def test_enable_job_not_found(self, cron_tool: CronTool):
+        cron_tool._cron.enable_job.return_value = None
+        result = await cron_tool.execute(action="enable", job_id="missing")
+        assert not result.success
+        assert "not found" in result.output.lower()
+
+
+class TestCronToolRichList:
+    async def test_list_shows_schedule_details(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j1",
+            name="Daily Report",
+            enabled=True,
+            schedule=CronSchedule(kind="cron", expr="0 9 * * *", tz="America/Vancouver"),
+            payload=CronPayload(message="check emails"),
+            state=CronJobState(
+                next_run_at_ms=1743984000000,
+                last_run_at_ms=1743897600000,
+                last_status="ok",
+            ),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "Daily Report" in result.output
+        assert "j1" in result.output
+        assert "0 9 * * *" in result.output
+        assert "enabled" in result.output.lower()
+        assert "ok" in result.output.lower()
+
+    async def test_list_shows_error_when_present(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j2",
+            name="Broken Task",
+            enabled=True,
+            schedule=CronSchedule(kind="every", every_ms=3600000),
+            payload=CronPayload(message="failing task"),
+            state=CronJobState(
+                last_run_at_ms=1743897600000,
+                last_status="error",
+                last_error="API timeout",
+            ),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "error" in result.output.lower()
+        assert "API timeout" in result.output
+
+    async def test_list_shows_disabled_jobs(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j3",
+            name="Paused Job",
+            enabled=False,
+            schedule=CronSchedule(kind="every", every_ms=60000),
+            payload=CronPayload(message="paused"),
+            state=CronJobState(),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "disabled" in result.output.lower()
+
+
+class TestCronToolUpdate:
+    async def test_update_schedule(self, cron_tool: CronTool) -> None:
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "updated"
+        cron_tool._cron.update_job.return_value = mock_job
+        result = await cron_tool.execute(action="update", job_id="j1", every_seconds=120)
+        assert result.success
+        assert "updated" in result.output.lower()
+        call_kwargs = cron_tool._cron.update_job.call_args
+        assert call_kwargs[0][0] == "j1"
+        assert call_kwargs[1]["schedule"].every_ms == 120000
+
+    async def test_update_message(self, cron_tool: CronTool) -> None:
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "updated"
+        cron_tool._cron.update_job.return_value = mock_job
+        result = await cron_tool.execute(action="update", job_id="j1", message="new prompt")
+        assert result.success
+        call_kwargs = cron_tool._cron.update_job.call_args
+        assert call_kwargs[1]["message"] == "new prompt"
+
+    async def test_update_missing_job_id(self, cron_tool: CronTool) -> None:
+        result = await cron_tool.execute(action="update")
+        assert not result.success
+        assert "job_id" in result.output.lower()
+
+    async def test_update_job_not_found(self, cron_tool: CronTool) -> None:
+        cron_tool._cron.update_job.return_value = None
+        result = await cron_tool.execute(action="update", job_id="missing", message="new")
+        assert not result.success
+        assert "not found" in result.output.lower()
 
 
 async def test_cron_tool_execute_dispatch() -> None:

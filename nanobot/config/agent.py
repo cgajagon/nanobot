@@ -66,4 +66,5 @@ class AgentConfig(Base):
         """Construct from config file data with overrides applied last."""
         data = dict(raw)
         data.update(overrides)
-        return cls.model_validate(data)
+        result: AgentConfig = cls.model_validate(data)
+        return result
