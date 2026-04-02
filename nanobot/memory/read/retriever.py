@@ -15,6 +15,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from nanobot.observability.langfuse import retriever_span
 from nanobot.observability.tracing import bind_trace
 
 from .graph_augmentation import GraphAugmenter
@@ -60,8 +61,6 @@ class MemoryRetriever:
         *,
         top_k: int = 6,
     ) -> list[RetrievedMemory]:
-        from nanobot.observability.langfuse import retriever_span
-
         self._graph_aug.reset_cache()
         t0 = time.monotonic()
 

@@ -1,8 +1,10 @@
 """Langfuse observability integration.
 
-Initializes the Langfuse client (OTEL-based) which auto-instruments litellm
-LLM calls. Provides helpers for creating custom spans around tool execution,
-routing, verification, and other agent operations.
+Initializes the Langfuse client (OTEL-based) and provides span helpers
+for custom instrumentation.  LLM call tracing is handled by
+``InstrumentedProvider`` (see ``instrumented_provider.py``).  This module
+provides ``generation_span``, ``retriever_span``, ``tool_span``, and
+``span`` context managers for wrapping specific operations.
 
 Gate: all operations are no-ops when ``config.langfuse.enabled`` is False or
 when keys are not configured.

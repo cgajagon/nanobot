@@ -58,7 +58,7 @@ The litellm OTEL callback for LLM call capture has been replaced by an explicit
 `InstrumentedProvider` wrapper (`nanobot/observability/instrumented_provider.py`).
 This wrapper implements the `LLMProvider` protocol and delegates to the underlying
 provider while emitting a Langfuse GENERATION observation for every `chat()` and
-`stream()` call, including token counts, model name, and latency.
+`stream_chat()` call, including token counts, model name, and latency.
 
 **Rationale**: The litellm OTEL callback was registered as a global side-effect at
 startup and produced `_EndedSpanFilter` noise in logs. The explicit wrapper approach

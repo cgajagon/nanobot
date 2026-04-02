@@ -53,11 +53,11 @@ class InstrumentedProvider(LLMProvider):
         self._inner = inner
 
     @property
-    def api_key(self) -> str | None:  # type: ignore[override]
+    def api_key(self) -> str | None:  # type: ignore[override]  # property overrides instance attr
         return self._inner.api_key
 
     @property
-    def api_base(self) -> str | None:  # type: ignore[override]
+    def api_base(self) -> str | None:  # type: ignore[override]  # property overrides instance attr
         return self._inner.api_base
 
     def get_default_model(self) -> str:
