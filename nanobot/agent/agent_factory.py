@@ -155,6 +155,7 @@ def _build_tools(
 def _wire_memory(
     context: ContextBuilder,
     config: AgentConfig,
+    rate_limiter: Any | None = None,
 ) -> ConsolidationOrchestrator:
     """Set up the memory consolidation subsystem.
 
@@ -189,6 +190,7 @@ def _wire_memory(
         max_concurrent=3,
         memory_window=config.memory.window,
         enable_contradiction_check=config.memory.enable_contradiction_check,
+        rate_limiter=rate_limiter,
     )
 
 
@@ -299,15 +301,15 @@ def build_agent(
         cron_service=cron_service,
     )
 
-    # 7. Wire memory
-    consolidator = _wire_memory(context=context, config=config)
-
-    # 8.5. Construct RateLimiter for Anthropic models
+    # 7. Construct RateLimiter for Anthropic models (before memory wiring)
     from nanobot.providers.rate_limiter import RateLimiter as _RateLimiter
 
     _rate_limiter: _RateLimiter | None = None
     if "anthropic/" in model or "claude" in model.lower():
         _rate_limiter = _RateLimiter(tokens_per_minute=50_000)
+
+    # 7.5. Wire memory (with rate limiter for consolidation)
+    consolidator = _wire_memory(context=context, config=config, rate_limiter=_rate_limiter)
 
     # 9. Construct StreamingLLMCaller
     llm_caller = StreamingLLMCaller(
