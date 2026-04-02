@@ -8,15 +8,12 @@ This module provides a ``CompositeReranker`` implementation and a shared
   and type-match signals into a composite score.
 
 Both ``CompositeReranker`` and the ONNX-based ``OnnxCrossEncoderReranker``
-(in ``onnx_reranker.py``) share the same ``rerank()`` / ``compute_rank_delta()``
-interface defined by the ``Reranker`` protocol, so callers can swap
-implementations via config.
+(in ``onnx_reranker.py``) share the same ``rerank()`` interface defined by
+the ``Reranker`` protocol, so callers can swap implementations via config.
 
-The module is gated behind the rollout system:
-  • ``reranker_mode = "enabled"``  – re-ranking is active
-  • ``reranker_mode = "shadow"``   – both rankings are computed, delta is
-    logged, but the heuristic-only ranking is returned
-  • ``reranker_mode = "disabled"`` – no re-ranker invocation
+The reranker mode is controlled by ``RerankerConfig.mode``:
+  • ``"enabled"``  – re-ranking is active
+  • ``"disabled"`` – no re-ranker invocation
 """
 
 from __future__ import annotations
@@ -47,13 +44,6 @@ class Reranker(Protocol):
         alpha: float | None = None,
     ) -> list[dict[str, Any]]:
         """Re-rank items by relevance to query, blending with heuristic scores."""
-
-    def compute_rank_delta(  # pragma: no cover
-        self,
-        heuristic_order: list[str],
-        reranked_order: list[str],
-    ) -> float:
-        """Compute displacement between heuristic and reranked orderings."""
 
 
 # ---------------------------------------------------------------------------
@@ -245,21 +235,3 @@ class CompositeReranker:
 
         items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return items
-
-    def compute_rank_delta(
-        self,
-        heuristic_order: list[str],
-        reranked_order: list[str],
-    ) -> float:
-        """Return average absolute rank displacement between two orderings.
-
-        Both lists are expected to contain item IDs in their respective order.
-        Items present in only one list are ignored.
-        """
-        common = set(heuristic_order) & set(reranked_order)
-        if not common:
-            return 0.0
-        h_rank = {uid: i for i, uid in enumerate(heuristic_order) if uid in common}
-        r_rank = {uid: i for i, uid in enumerate(reranked_order) if uid in common}
-        total = sum(abs(h_rank[uid] - r_rank[uid]) for uid in common)
-        return total / len(common)
