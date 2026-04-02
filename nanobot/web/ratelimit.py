@@ -44,7 +44,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """Extract the real client IP, respecting X-Forwarded-For when present."""
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            return str(forwarded.split(",")[0].strip())
         client = request.client
         return client.host if client else "unknown"
 

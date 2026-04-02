@@ -13,13 +13,13 @@ class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
     name = "cron"
-    description = "Schedule reminders and recurring tasks. Actions: add, list, remove."
+    description = "Schedule reminders and recurring tasks. Actions: add, list, remove, enable, disable, update."
     parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "list", "remove"],
+                "enum": ["add", "list", "remove", "enable", "disable", "update"],
                 "description": "Action to perform",
             },
             "message": {"type": "string", "description": "Reminder message (for add)"},
@@ -39,7 +39,10 @@ class CronTool(Tool):
                 "type": "string",
                 "description": "ISO datetime for one-time execution (e.g. '2026-02-12T10:30:00')",
             },
-            "job_id": {"type": "string", "description": "Job ID (for remove)"},
+            "job_id": {
+                "type": "string",
+                "description": "Job ID (for remove, enable, disable, update)",
+            },
         },
         "required": ["action"],
     }
@@ -70,6 +73,10 @@ class CronTool(Tool):
             return self._list_jobs()
         elif action == "remove":
             return self._remove_job(job_id)
+        elif action == "enable":
+            return self._enable_job(job_id, enabled=True)
+        elif action == "disable":
+            return self._enable_job(job_id, enabled=False)
         return ToolResult.fail(f"Unknown action: {action}")
 
     def _add_job(
@@ -127,6 +134,15 @@ class CronTool(Tool):
             return ToolResult.ok("No scheduled jobs.")
         lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
         return ToolResult.ok("Scheduled jobs:\n" + "\n".join(lines))
+
+    def _enable_job(self, job_id: str | None, *, enabled: bool) -> ToolResult:
+        if not job_id:
+            return ToolResult.fail("Error: job_id is required for enable/disable")
+        job = self._cron.enable_job(job_id, enabled=enabled)
+        if job is None:
+            return ToolResult.fail(f"Job {job_id} not found")
+        state = "enabled" if enabled else "disabled"
+        return ToolResult.ok(f"Job '{job.name}' ({job_id}) {state}")
 
     def _remove_job(self, job_id: str | None) -> ToolResult:
         if not job_id:

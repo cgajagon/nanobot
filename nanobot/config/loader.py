@@ -52,7 +52,8 @@ def load_config(config_path: Path | None = None) -> Config:
             sys.exit(1)
         _migrate_graph_enabled(data)
         try:
-            return Config.model_validate(data)
+            result: Config = Config.model_validate(data)
+            return result
         except ValueError as e:
             print(f"Error: config validation failed for {path}:\n{e}", file=sys.stderr)
             sys.exit(1)

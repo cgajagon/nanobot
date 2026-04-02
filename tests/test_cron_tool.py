@@ -170,6 +170,37 @@ def test_cron_tool_add_list_remove_success() -> None:
     assert removed.success
 
 
+class TestCronToolEnableDisable:
+    async def test_enable_success(self, cron_tool: CronTool):
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "reminder"
+        cron_tool._cron.enable_job.return_value = mock_job
+        result = await cron_tool.execute(action="enable", job_id="j1")
+        assert result.success
+        assert "enabled" in result.output
+        cron_tool._cron.enable_job.assert_called_once_with("j1", enabled=True)
+
+    async def test_disable_success(self, cron_tool: CronTool):
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "reminder"
+        cron_tool._cron.enable_job.return_value = mock_job
+        result = await cron_tool.execute(action="disable", job_id="j1")
+        assert result.success
+        assert "disabled" in result.output
+        cron_tool._cron.enable_job.assert_called_once_with("j1", enabled=False)
+
+    async def test_enable_missing_job_id(self, cron_tool: CronTool):
+        result = await cron_tool.execute(action="enable")
+        assert not result.success
+        assert "job_id" in result.output.lower()
+
+    async def test_enable_job_not_found(self, cron_tool: CronTool):
+        cron_tool._cron.enable_job.return_value = None
+        result = await cron_tool.execute(action="enable", job_id="missing")
+        assert not result.success
+        assert "not found" in result.output.lower()
+
+
 async def test_cron_tool_execute_dispatch() -> None:
     tool = CronTool(_FakeCron())
     tool.set_context("telegram", "123")
