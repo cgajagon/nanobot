@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Blocks implementation commits (feat, fix, refactor, test, perf) to main branch.
+# Blocks implementation commits and merges to main branch.
 # Allows docs: and chore: commits on main. Silent on non-main branches.
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | python -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || echo "")
 
-# Must contain git commit
-if ! echo "$CMD" | grep -q "git commit"; then
+# Must contain git commit or git merge
+IS_COMMIT=false
+IS_MERGE=false
+if echo "$CMD" | grep -q "git commit"; then
+  IS_COMMIT=true
+fi
+if echo "$CMD" | grep -q "git merge"; then
+  IS_MERGE=true
+fi
+
+if [ "$IS_COMMIT" = false ] && [ "$IS_MERGE" = false ]; then
   exit 0
 fi
 
@@ -25,7 +34,13 @@ if [ "$BRANCH" != "main" ]; then
   exit 0
 fi
 
-# Allow merge, release, docs, chore, ci commits on main
+# Block merges on main — all merges should go through PRs
+if [ "$IS_MERGE" = true ]; then
+  echo "BLOCKED: Do not merge branches into main directly. Push the feature branch and create a PR instead." >&2
+  exit 2
+fi
+
+# Allow release, docs, chore, ci commits on main
 if echo "$CMD" | grep -qE '(Merge|chore|docs|ci)(\([a-zA-Z0-9_-]+\))?!?: '; then
   exit 0
 fi

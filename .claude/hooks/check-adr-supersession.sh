@@ -7,7 +7,7 @@ FILE=$(echo "$INPUT" | python -c "import sys,json; d=json.load(sys.stdin); print
 
 # Only trigger for architecture docs
 case "$FILE" in
-  *architecture.md|*cognitive-architecture.md) ;;
+  *architecture.md|*cognitive-architecture.md|*memory-architecture.md) ;;
   *) exit 0 ;;
 esac
 
