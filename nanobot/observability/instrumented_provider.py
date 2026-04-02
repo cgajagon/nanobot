@@ -49,16 +49,8 @@ class InstrumentedProvider(LLMProvider):
     """
 
     def __init__(self, inner: LLMProvider) -> None:
-        # Do not call super().__init__() — we delegate everything to inner.
+        super().__init__(api_key=inner.api_key, api_base=inner.api_base)
         self._inner = inner
-
-    @property
-    def api_key(self) -> str | None:  # type: ignore[override]  # property overrides instance attr
-        return self._inner.api_key
-
-    @property
-    def api_base(self) -> str | None:  # type: ignore[override]  # property overrides instance attr
-        return self._inner.api_base
 
     def get_default_model(self) -> str:
         return self._inner.get_default_model()
