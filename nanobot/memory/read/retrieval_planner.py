@@ -108,6 +108,14 @@ class RetrievalPlanner:
             "postmortem",
             "root cause",
             "outage",
+            "broken",
+            "broke",
+            "bug",
+            "crash",
+            "went wrong",
+            "issue",
+            "problem",
+            "regression",
         )
         reflection_markers = (
             "reflect",
@@ -144,7 +152,15 @@ class RetrievalPlanner:
             "design decision",
             "memory architecture",
         )
-        constraints_markers = ("constraint", "must", "cannot", "before running commands")
+        constraints_markers = (
+            "constraint",
+            "must",
+            "cannot",
+            "can't",
+            "before running commands",
+            "limitation",
+            "restriction",
+        )
         conflict_markers = ("conflict", "needs_user", "unresolved decision")
         rollout_markers = ("rollout", "router", "shadow mode", "memory behavior enabled")
 
