@@ -13,15 +13,49 @@
  * 3. Replace local thread IDs with server IDs in subsequent requests.
  * 4. When the first message has no threadId, record a "pending" state so the
  *    next message (with a local ID) can be mapped to the server's UUID.
+ *
+ * The threadMap is persisted to localStorage so it survives page reloads.
  */
 
 const CHAT_API = "/api/chat";
+const STORAGE_KEY = "nanobot-thread-map";
+
+/** Load threadMap from localStorage, or start empty. */
+function loadMap(): Map<string, string> {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      return new Map<string, string>(JSON.parse(stored));
+    }
+  } catch {
+    // Corrupted data — start fresh.
+  }
+  return new Map<string, string>();
+}
+
+/** Persist threadMap to localStorage. */
+function persistMap(): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify([...threadMap]));
+  } catch {
+    // localStorage full or unavailable — no-op.
+  }
+}
 
 /** Map from local thread ID (__LOCALID_xxx) to server thread ID (UUID). */
-const threadMap = new Map<string, string>();
+const threadMap = loadMap();
 
 /** Server thread ID from the most recent request that had no local thread ID. */
 let pendingServerThreadId: string | null = null;
+
+/**
+ * Look up the server thread ID for a local or server thread ID.
+ * Returns the server UUID if a mapping exists, or the input unchanged.
+ * Used by the history adapter to resolve thread IDs for API calls.
+ */
+export function getServerThreadId(threadId: string): string {
+  return threadMap.get(threadId) ?? threadId;
+}
 
 /**
  * Install a global fetch interceptor that synchronizes thread IDs.
@@ -60,6 +94,7 @@ export function installThreadSync(): void {
         body.threadId = pendingServerThreadId;
         init = { ...init, body: JSON.stringify(body) };
         pendingServerThreadId = null;
+        persistMap();
       }
     }
 
@@ -71,6 +106,7 @@ export function installThreadSync(): void {
       if (localThreadId) {
         // Direct mapping: local → server.
         threadMap.set(localThreadId, serverThreadId);
+        persistMap();
       } else {
         // First message had no threadId — store as pending for the next request.
         pendingServerThreadId = serverThreadId;

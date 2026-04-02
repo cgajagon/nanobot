@@ -14,6 +14,7 @@ import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { serverHistoryAdapter, ThreadHistorySync } from "@/lib/thread-history";
 
 /** MIME types that are safe to read as text. */
 const TEXT_MIMES = new Set([
@@ -237,11 +238,13 @@ export default function App() {
         new SimpleTextAttachmentAdapter(),
         fallbackFileAdapter,
       ]),
+      history: serverHistoryAdapter,
     },
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadHistorySync />
       <div className="flex h-screen w-full bg-background">
         <div className="hidden md:block">
           <Sidebar collapsed={sidebarCollapsed} />
