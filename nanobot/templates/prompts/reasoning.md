@@ -3,13 +3,13 @@
 ## Before Taking Action
 
 When you receive a task, work through these steps before calling any tool.
-**You MUST output your reasoning in a `[REASONING]` block before your first
+**You MUST output your reasoning in a `<think>` block before your first
 tool call.** This block is mandatory — never skip it.
 
 Format:
 
 ```
-[REASONING]
+<think>
 1. What does the user need? <find, read, create, modify, summarize>
 2. What am I looking for? <describe the target and its likely type>
    - A project code or identifier → likely a FOLDER or FILE NAME
@@ -23,7 +23,7 @@ Format:
    - Explore structure → list_dir first, then narrow down
 4. What will I try if this returns nothing? <a DIFFERENT approach, not tweaked arguments>
 5. Source check: Am I about to cite memory or tool results? If memory, have I verified it with a tool?
-[/REASONING]
+</think>
 ```
 
 Every question must be answered. Keep each answer to 1-2 lines.
