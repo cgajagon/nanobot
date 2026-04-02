@@ -46,7 +46,7 @@ class RetrievalPlanner:
     ----------
     router_enabled:
         When *False*, ``plan()`` always returns the ``fact_lookup`` intent
-        regardless of the query content (shadow / disabled rollout modes).
+        regardless of the query content (when router is disabled).
     type_separation_enabled:
         Stored for callers that need to know whether type boosts should be
         applied; the planner itself always populates ``type_boost`` in the
