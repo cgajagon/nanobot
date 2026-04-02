@@ -283,6 +283,39 @@ class TestCronToolRichList:
         assert "disabled" in result.output.lower()
 
 
+class TestCronToolUpdate:
+    async def test_update_schedule(self, cron_tool: CronTool) -> None:
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "updated"
+        cron_tool._cron.update_job.return_value = mock_job
+        result = await cron_tool.execute(action="update", job_id="j1", every_seconds=120)
+        assert result.success
+        assert "updated" in result.output.lower()
+        call_kwargs = cron_tool._cron.update_job.call_args
+        assert call_kwargs[0][0] == "j1"
+        assert call_kwargs[1]["schedule"].every_ms == 120000
+
+    async def test_update_message(self, cron_tool: CronTool) -> None:
+        mock_job = MagicMock(id="j1")
+        mock_job.name = "updated"
+        cron_tool._cron.update_job.return_value = mock_job
+        result = await cron_tool.execute(action="update", job_id="j1", message="new prompt")
+        assert result.success
+        call_kwargs = cron_tool._cron.update_job.call_args
+        assert call_kwargs[1]["message"] == "new prompt"
+
+    async def test_update_missing_job_id(self, cron_tool: CronTool) -> None:
+        result = await cron_tool.execute(action="update")
+        assert not result.success
+        assert "job_id" in result.output.lower()
+
+    async def test_update_job_not_found(self, cron_tool: CronTool) -> None:
+        cron_tool._cron.update_job.return_value = None
+        result = await cron_tool.execute(action="update", job_id="missing", message="new")
+        assert not result.success
+        assert "not found" in result.output.lower()
+
+
 async def test_cron_tool_execute_dispatch() -> None:
     tool = CronTool(_FakeCron())
     tool.set_context("telegram", "123")
