@@ -59,13 +59,7 @@ class MemoryRetriever:
         """
         if self._embedder is None:
             return 0.0
-        from ..embedder import HashEmbedder, LocalEmbedder
-
-        if isinstance(self._embedder, HashEmbedder):
-            return 0.2
-        if isinstance(self._embedder, LocalEmbedder):
-            return 0.5
-        return 0.7
+        return self._embedder.vector_quality
 
     # ------------------------------------------------------------------
     # Public entry point
