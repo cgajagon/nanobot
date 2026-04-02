@@ -225,3 +225,62 @@ class TestRerankItems:
         result = scorer.rerank_items("query", [])
         scorer._reranker.rerank.assert_not_called()
         assert result == []
+
+
+class TestRecencyBoostMagnitude:
+    """Recency boost should meaningfully influence final scores."""
+
+    def test_recent_item_scores_above_old_item(self) -> None:
+        """A very recent item should score noticeably above an old one."""
+        from datetime import datetime, timezone
+
+        scorer = _make_scorer()
+        now = datetime.now(timezone.utc).isoformat()
+        old = "2020-01-01T00:00:00+00:00"
+
+        plan = _make_plan(
+            policy={
+                "candidate_multiplier": 3,
+                "half_life_days": 60.0,
+                "type_boost": {"semantic": 0.0, "episodic": 0.0, "reflection": 0.0},
+            }
+        )
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        items = [
+            {
+                "id": "recent",
+                "type": "fact",
+                "summary": "recent event",
+                "timestamp": now,
+                "status": "active",
+                "score": 0.01,
+                "entities": [],
+            },
+            {
+                "id": "old",
+                "type": "fact",
+                "summary": "old event",
+                "timestamp": old,
+                "status": "active",
+                "score": 0.01,
+                "entities": [],
+            },
+        ]
+
+        scored = scorer.score_items(
+            items,
+            plan,
+            profile_data,
+            graph_entities=set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=True,
+        )
+        scores = {r["id"]: r["score"] for r in scored}
+        gap = scores["recent"] - scores["old"]
+        # With coefficient 0.15 and recency ~1.0 vs ~0.0, gap should be ~0.15
+        assert gap > 0.10, f"Recency gap {gap:.3f} too small — coefficient may be too low"

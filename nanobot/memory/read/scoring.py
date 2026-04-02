@@ -372,7 +372,7 @@ class RetrievalScorer:
                 if item_entities & graph_entities:
                     g_boost = graph_boost_value
 
-            intent_bonus = type_boost + (0.08 * recency) + stability_boost + reflection_penalty
+            intent_bonus = type_boost + (0.15 * recency) + stability_boost + reflection_penalty
             item["score"] = base_score + adjustment + intent_bonus + g_boost
 
             # Record scoring metadata
