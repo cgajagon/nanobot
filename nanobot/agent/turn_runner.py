@@ -589,13 +589,13 @@ class TurnRunner:
             logger.warning(
                 "LLM returned error (attempt {}): {}", state.consecutive_errors, response.content
             )
-            if state.consecutive_errors >= 3:
+            if state.consecutive_errors >= 5:
                 fc = "I'm having trouble reaching the language model right now. Please try again in a moment."
                 state.messages[:] = self._context.add_assistant_message(state.messages, fc)
                 return "break", fc
             if on_progress:
                 await on_progress(StatusEvent(status_code="retrying"))
-            await asyncio.sleep(min(2**state.consecutive_errors, 10))
+            await asyncio.sleep(min(2**state.consecutive_errors, 30))
             return "continue", None
 
         if response.finish_reason == "content_filter":

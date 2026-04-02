@@ -35,9 +35,17 @@ async def test_llm_error_emits_retrying_status_event() -> None:
     assert "Hello" in result
 
 
-async def test_llm_error_three_times_returns_fallback_message() -> None:
-    """Three consecutive errors return the fallback message without crashing."""
-    provider = ScriptedProvider([error_response(), error_response(), error_response()])
+async def test_llm_error_five_times_returns_fallback_message() -> None:
+    """Five consecutive errors return the fallback message without crashing."""
+    provider = ScriptedProvider(
+        [
+            error_response(),
+            error_response(),
+            error_response(),
+            error_response(),
+            error_response(),
+        ]
+    )
     received: list[ProgressEvent] = []
 
     async def tracking(event: ProgressEvent) -> None:
@@ -50,5 +58,5 @@ async def test_llm_error_three_times_returns_fallback_message() -> None:
     retry_signals = [
         e for e in received if isinstance(e, StatusEvent) and e.status_code == "retrying"
     ]
-    # Signals on attempt 1 and 2; attempt 3 breaks the loop
-    assert len(retry_signals) == 2
+    # Signals on attempts 1-4; attempt 5 breaks the loop
+    assert len(retry_signals) == 4

@@ -414,13 +414,15 @@ class TestGoldenWriteToolSideEffect:
 
 
 class TestGoldenConsecutiveErrorFallback:
-    """Three consecutive LLM error responses must trigger graceful fallback.
+    """Five consecutive LLM error responses must trigger graceful fallback.
     This tests the agent's error-counting and recovery mechanism.
     """
 
-    async def test_three_errors_produce_fallback(self, tmp_path: Path):
+    async def test_five_errors_produce_fallback(self, tmp_path: Path):
         provider = ScriptedProvider(
             [
+                LLMResponse(content="err", finish_reason="error"),
+                LLMResponse(content="err", finish_reason="error"),
                 LLMResponse(content="err", finish_reason="error"),
                 LLMResponse(content="err", finish_reason="error"),
                 LLMResponse(content="err", finish_reason="error"),
@@ -431,8 +433,8 @@ class TestGoldenConsecutiveErrorFallback:
 
         assert result is not None
         assert "trouble" in result.content.lower() or "try again" in result.content.lower()
-        # The agent should have called the LLM 3 times before giving up
-        assert len(provider.call_log) == 3
+        # The agent should have called the LLM 5 times before giving up
+        assert len(provider.call_log) == 5
 
 
 # ---------------------------------------------------------------------------

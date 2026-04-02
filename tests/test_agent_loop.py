@@ -224,9 +224,11 @@ class TestAgentLoopConsecutiveErrors:
     """Test consecutive LLM errors -> graceful fallback."""
 
     async def test_consecutive_llm_errors(self, tmp_path: Path):
-        """Three consecutive LLM errors cause graceful failure."""
+        """Five consecutive LLM errors cause graceful failure."""
         provider = ScriptedProvider(
             [
+                LLMResponse(content="LLM error occurred", finish_reason="error"),
+                LLMResponse(content="LLM error occurred", finish_reason="error"),
                 LLMResponse(content="LLM error occurred", finish_reason="error"),
                 LLMResponse(content="LLM error occurred", finish_reason="error"),
                 LLMResponse(content="LLM error occurred", finish_reason="error"),
