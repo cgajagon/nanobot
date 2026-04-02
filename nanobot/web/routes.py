@@ -357,6 +357,60 @@ async def delete_thread(request: Request, thread_id: str):
     return {"status": "ok", "threadId": thread_id}
 
 
+@router.get("/threads/{thread_id}/messages")
+async def get_thread_messages(request: Request, thread_id: str):
+    """Return user-visible messages for a thread in assistant-ui format.
+
+    Filters out system messages, tool messages, and assistant messages
+    that have only tool_calls (no displayable text content). Transforms
+    each message to ThreadMessageLike format with id, role, and content
+    as a list of {type, text} parts.
+    """
+    from nanobot.web.models import (
+        ThreadMessageContent,
+        ThreadMessageItem,
+        ThreadMessagesResponse,
+    )
+
+    session_manager = request.app.state.session_manager
+    session_key = _session_key(thread_id)
+    session = session_manager.get_or_create(session_key)
+    history = session.get_history()
+
+    items: list[ThreadMessageItem] = []
+    idx = 0
+    for msg in history:
+        role = msg.get("role", "")
+        content = msg.get("content")
+
+        # Skip non-user-visible messages
+        if role not in ("user", "assistant"):
+            continue
+        # Skip assistant messages with no text content (tool-call-only)
+        if role == "assistant" and not content:
+            continue
+
+        # Transform content to assistant-ui format
+        if isinstance(content, str):
+            parts = [ThreadMessageContent(type="text", text=content)]
+        elif isinstance(content, list):
+            parts = [
+                ThreadMessageContent(type=p.get("type", "text"), text=p.get("text", ""))
+                for p in content
+                if isinstance(p, dict) and p.get("text")
+            ]
+        else:
+            continue
+
+        if not parts:
+            continue
+
+        items.append(ThreadMessageItem(id=f"msg_{idx}", role=role, content=parts))
+        idx += 1
+
+    return ThreadMessagesResponse(messages=items)
+
+
 # ---------------------------------------------------------------------------
 # Legacy endpoints (kept for backward compatibility)
 # ---------------------------------------------------------------------------
