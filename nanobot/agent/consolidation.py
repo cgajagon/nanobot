@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger
 
+from nanobot.context.compression import estimate_messages_tokens
+
 if TYPE_CHECKING:
     from nanobot.memory.store import MemoryStore
     from nanobot.providers.base import LLMProvider
@@ -34,12 +36,14 @@ class ConsolidationOrchestrator:
         max_concurrent: int = 3,
         memory_window: int = 50,
         enable_contradiction_check: bool = True,
+        rate_limiter: Any | None = None,
     ) -> None:
         self._memory: MemoryStore = memory
         self._archive_fn = archive_fn
         self._max_concurrent = max_concurrent
         self._memory_window = memory_window
         self._enable_contradiction_check = enable_contradiction_check
+        self._rate_limiter = rate_limiter
         self._locks: dict[str, asyncio.Lock] = {}
         self._in_progress: set[str] = set()
         self._sem: asyncio.Semaphore | None = None
@@ -100,7 +104,8 @@ class ConsolidationOrchestrator:
         """
         lock = self._get_or_create_lock(session_key)
         async with lock:
-            return await self._memory.consolidate(
+            await self._rate_limit_guard(session)
+            result = await self._memory.consolidate(
                 session,
                 provider,
                 model,
@@ -108,6 +113,8 @@ class ConsolidationOrchestrator:
                 enable_contradiction_check=self._enable_contradiction_check,
                 archive_all=archive_all,
             )
+            self._rate_limit_record(session)
+            return result
 
     # ------------------------------------------------------------------
     # Internal
@@ -119,6 +126,19 @@ class ConsolidationOrchestrator:
             lock = asyncio.Lock()
             self._locks[session_key] = lock
         return lock
+
+    async def _rate_limit_guard(self, session: Session) -> None:
+        """Wait for rate limit headroom before a consolidation LLM call."""
+        if self._rate_limiter is None:
+            return
+        await self._rate_limiter.wait_if_needed()
+
+    def _rate_limit_record(self, session: Session) -> None:
+        """Record estimated token usage after a consolidation LLM call."""
+        if self._rate_limiter is None:
+            return
+        estimated = estimate_messages_tokens(session.messages) // 4
+        self._rate_limiter.record(max(2000, estimated))
 
     async def _run(
         self,
@@ -133,6 +153,7 @@ class ConsolidationOrchestrator:
                 lock = self._get_or_create_lock(session_key)
                 async with lock:
                     try:
+                        await self._rate_limit_guard(session)
                         await self._memory.consolidate(
                             session,
                             provider,
@@ -140,6 +161,7 @@ class ConsolidationOrchestrator:
                             memory_window=self._memory_window,
                             enable_contradiction_check=self._enable_contradiction_check,
                         )
+                        self._rate_limit_record(session)
                     except Exception:  # crash-barrier: consolidation failure
                         logger.exception("Consolidation failed for {}; archiving", session_key)
                         if self._archive_fn is not None:
