@@ -276,6 +276,11 @@ def build_agent(
         strategy_store=strategy_store,
     )
 
+    # 4.5. Wrap provider with Langfuse generation tracing
+    from nanobot.observability.instrumented_provider import InstrumentedProvider
+
+    provider = InstrumentedProvider(provider)
+
     # 5. Construct SessionManager
     sessions = session_manager or _SessionManager(config.workspace_path)
 

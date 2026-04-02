@@ -495,9 +495,9 @@ class TurnRunner:
 
         update_current_span(
             metadata={
-                "batch_tools": [tc.name for tc in response.tool_calls],
-                "batch_any_failed": any(not a.success for a in latest_attempts),
-                "batch_duration_ms": round(elapsed_ms),
+                f"batch_{state.iteration}_tools": [tc.name for tc in response.tool_calls],
+                f"batch_{state.iteration}_failed": any(not a.success for a in latest_attempts),
+                f"batch_{state.iteration}_ms": round(elapsed_ms),
             }
         )
 

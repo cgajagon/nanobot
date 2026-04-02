@@ -52,6 +52,20 @@ auto-captures litellm LLM calls as GENERATION observations. Custom spans wrap
 request processing, tool execution, context assembly, verification, and delegation.
 See `nanobot/observability/langfuse.py` for the full integration.
 
+### Phase 3 — InstrumentedProvider (2026-03-31)
+
+The litellm OTEL callback for LLM call capture has been replaced by an explicit
+`InstrumentedProvider` wrapper (`nanobot/observability/instrumented_provider.py`).
+This wrapper implements the `LLMProvider` protocol and delegates to the underlying
+provider while emitting a Langfuse GENERATION observation for every `chat()` and
+`stream_chat()` call, including token counts, model name, and latency.
+
+**Rationale**: The litellm OTEL callback was registered as a global side-effect at
+startup and produced `_EndedSpanFilter` noise in logs. The explicit wrapper approach
+is cleaner, testable, and does not depend on litellm internals. It is wired at the
+composition root (`agent_factory.py`) so all LLM calls — regardless of provider
+implementation — are captured.
+
 ### MetricsCollector — Removed
 
 The legacy `MetricsCollector` (in-memory counters flushed to `metrics.json`) has been
