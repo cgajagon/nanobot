@@ -607,6 +607,37 @@ class TestRRFFusion:
         assert fused[0]["score"] == fused[0]["_rrf_score"]
 
 
+class TestAdaptiveVectorWeight:
+    """_vector_weight returns weight based on embedder semantic quality."""
+
+    def test_openai_embedder_returns_high_weight(self) -> None:
+        retriever = _make_retriever()
+        mock_embedder = MagicMock()
+        retriever._embedder = mock_embedder
+        # Default (non-Hash, non-Local) should get 0.7
+        assert retriever._vector_weight() == pytest.approx(0.7)
+
+    def test_hash_embedder_returns_low_weight(self) -> None:
+        from nanobot.memory.embedder import HashEmbedder
+
+        retriever = _make_retriever()
+        retriever._embedder = HashEmbedder(dims=384)
+        assert retriever._vector_weight() == pytest.approx(0.2)
+
+    def test_local_embedder_returns_mid_weight(self) -> None:
+        from nanobot.memory.embedder import LocalEmbedder
+
+        retriever = _make_retriever()
+        mock_local = MagicMock(spec=LocalEmbedder)
+        retriever._embedder = mock_local
+        assert retriever._vector_weight() == pytest.approx(0.5)
+
+    def test_none_embedder_returns_zero(self) -> None:
+        retriever = _make_retriever()
+        retriever._embedder = None
+        assert retriever._vector_weight() == pytest.approx(0.0)
+
+
 class TestUnifiedRetrievePath:
     """Tests for the unified retrieval path (db + embedder injected)."""
 
