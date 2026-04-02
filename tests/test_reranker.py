@@ -95,7 +95,6 @@ class TestRerankerRolloutGating:
         store = MemoryStore(
             tmp_path,
             memory_config=MemoryConfig(
-                rollout_mode="enabled",
                 reranker=RerankerConfig(mode=reranker_mode),
             ),
         )
@@ -109,10 +108,6 @@ class TestRerankerRolloutGating:
         store = self._make_store(tmp_path, "enabled")
         assert store.memory_config.reranker.mode == "enabled"
 
-    def test_shadow_mode_sets_flag(self, tmp_path) -> None:
-        store = self._make_store(tmp_path, "shadow")
-        assert store.memory_config.reranker.mode == "shadow"
-
     def test_reranker_instance_created(self, tmp_path) -> None:
         store = self._make_store(tmp_path, "enabled")
         # When ONNX is available, uses OnnxCrossEncoderReranker; otherwise falls back
@@ -124,9 +119,9 @@ class TestRerankerRolloutGating:
 
         store = MemoryStore(
             tmp_path,
-            memory_config=MemoryConfig(reranker=RerankerConfig(mode="shadow")),
+            memory_config=MemoryConfig(reranker=RerankerConfig(mode="disabled")),
         )
-        assert store.memory_config.reranker.mode == "shadow"
+        assert store.memory_config.reranker.mode == "disabled"
 
     def test_env_override_reranker_alpha(self, tmp_path, monkeypatch) -> None:
         from nanobot.config.memory import MemoryConfig, RerankerConfig

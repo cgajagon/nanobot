@@ -46,16 +46,14 @@ class TestMemoryStoreExtraHelpers:
             tmp_path,
             embedding_provider="hash",
             memory_config=MemoryConfig(
-                rollout_mode="shadow",
                 rollout_gate_min_recall_at_k=0.91,
-                reranker=RerankerConfig(mode="shadow", alpha=0.8, model="test-reranker"),
+                reranker=RerankerConfig(mode="disabled", alpha=0.8, model="test-reranker"),
                 graph_enabled=False,
             ),
         )
         mc = store.memory_config
-        assert mc.rollout_mode == "shadow"
         assert mc.rollout_gate_min_recall_at_k == pytest.approx(0.91)
-        assert mc.reranker.mode == "shadow"
+        assert mc.reranker.mode == "disabled"
         assert mc.reranker.alpha == pytest.approx(0.8)
 
     @pytest.mark.parametrize(

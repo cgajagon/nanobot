@@ -120,11 +120,12 @@ class LocalEmbedder:
 
     @property
     def available(self) -> bool:
+        """Whether onnxruntime is importable. Does not download or load the model."""
         try:
-            self._ensure_initialized()
+            import onnxruntime  # noqa: F401
+
             return True
-        except Exception:  # crash-barrier: model load failure disables local embedder
-            logger.warning("LocalEmbedder not available — model load failed")
+        except (ImportError, OSError):
             return False
 
     async def embed(self, text: str) -> list[float]:
