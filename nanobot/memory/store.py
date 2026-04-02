@@ -65,9 +65,8 @@ class MemoryStore:
         self.workspace = workspace
         self._memory_config: MemoryConfig = memory_config or MemoryConfig()
 
-        # Construct embedder — try OpenAI first, fall back to HashEmbedder.
-        # LocalEmbedder (ONNX, ~90MB) is only used when explicitly requested
-        # via embedding_provider="local" or "onnx".
+        # Construct embedder: OpenAI → LocalEmbedder (ONNX) → HashEmbedder.
+        # Explicit embedding_provider overrides the cascade.
         self._embedder: Embedder | None = None
         if embedding_provider in ("local", "onnx"):
             try:
@@ -79,13 +78,20 @@ class MemoryStore:
         elif embedding_provider == "hash":
             self._embedder = HashEmbedder()
         else:
-            # Default path: try OpenAI, fall back to HashEmbedder.
+            # Default cascade: OpenAI → Local ONNX → Hash.
             try:
                 _oai = OpenAIEmbedder()
                 if _oai.available:
                     self._embedder = _oai
             except Exception:  # crash-barrier: OpenAI init failure
                 pass
+            if self._embedder is None:
+                try:
+                    _local = LocalEmbedder()
+                    if _local.available:
+                        self._embedder = _local
+                except Exception:  # crash-barrier: local embedder init failure
+                    pass
         if self._embedder is None:
             self._embedder = HashEmbedder()
 
@@ -239,6 +245,7 @@ class MemoryStore:
             coercer=self._coercer,
             conflict_mgr=self.conflict_mgr,
             snapshot=self.snapshot,
+            embedder=self._embedder,
         )
         self.profile_mgr.set_corrector(self._corrector)
 
@@ -250,6 +257,7 @@ class MemoryStore:
             conflict_mgr=self.conflict_mgr,
             snapshot=self.snapshot,
             db=self.db,
+            embedder=self._embedder,
         )
 
     # ------------------------------------------------------------------
