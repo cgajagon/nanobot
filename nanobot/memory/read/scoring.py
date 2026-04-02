@@ -7,7 +7,6 @@ and type boosts, and cross-encoder re-ranking delegation.
 
 from __future__ import annotations
 
-import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -397,19 +396,7 @@ class RetrievalScorer:
         query: str,
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Apply cross-encoder reranking (enabled/shadow/disabled)."""
-        reranker_mode = self._memory_config.reranker.mode
-        if reranker_mode not in ("enabled", "shadow") or not items:
+        """Apply cross-encoder reranking (enabled/disabled)."""
+        if self._memory_config.reranker.mode != "enabled" or not items:
             return items
-
-        if reranker_mode == "enabled":
-            return self._reranker.rerank(query, items)
-
-        # Shadow: compute re-ranked order but keep heuristic order.
-        shadow_items = copy.deepcopy(items)
-        shadow_items = self._reranker.rerank(query, shadow_items)
-        heuristic_ids = [str(it.get("id", "")) for it in items]
-        reranked_ids = [str(it.get("id", "")) for it in shadow_items]
-        delta = self._reranker.compute_rank_delta(heuristic_ids, reranked_ids)
-        logger.debug("shadow rerank delta: %.3f", delta)
-        return items
+        return self._reranker.rerank(query, items)
