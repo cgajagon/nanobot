@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from nanobot.config.memory import MemoryConfig, MemorySectionWeights, RerankerConfig, VectorConfig
 
 
@@ -14,7 +16,6 @@ class TestMemoryConfigDefaults:
         assert mc.md_token_cap == 1500
         assert mc.uncertainty_threshold == 0.6
         assert mc.enable_contradiction_check is True
-        assert mc.rollout_mode == "enabled"
         assert mc.micro_extraction_enabled is False
         assert mc.micro_extraction_model is None
         assert mc.raw_turn_ingestion is True
@@ -33,13 +34,12 @@ class TestMemoryConfigDefaults:
         assert mc.vector.verify_write is True
 
     def test_override(self):
-        mc = MemoryConfig(window=50, rollout_mode="disabled")
+        mc = MemoryConfig(window=50)
         assert mc.window == 50
-        assert mc.rollout_mode == "disabled"
 
     def test_nested_override(self):
-        mc = MemoryConfig(reranker=RerankerConfig(mode="shadow", alpha=0.8))
-        assert mc.reranker.mode == "shadow"
+        mc = MemoryConfig(reranker=RerankerConfig(mode="disabled", alpha=0.8))
+        assert mc.reranker.mode == "disabled"
         assert mc.reranker.alpha == 0.8
 
     def test_snake_case_keys(self):
@@ -74,6 +74,18 @@ class TestRerankerConfig:
         assert rc.model == "onnx:ms-marco-MiniLM-L-6-v2"
 
 
+class TestRerankerConfigValidation:
+    def test_invalid_mode_rejected(self):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            RerankerConfig(mode="shadow")
+
+    def test_valid_modes_accepted(self):
+        assert RerankerConfig(mode="enabled").mode == "enabled"
+        assert RerankerConfig(mode="disabled").mode == "disabled"
+
+
 class TestVectorConfig:
     def test_defaults(self):
         vc = VectorConfig()
@@ -89,7 +101,6 @@ class TestRolloutStatus:
         mc = MemoryConfig()
         status = mc.rollout_status()
         expected_keys = {
-            "rollout_mode",
             "type_separation_enabled",
             "router_enabled",
             "reflection_enabled",
@@ -117,13 +128,11 @@ class TestRolloutStatus:
     def test_rollout_status_reflects_custom_values(self):
         """rollout_status() reflects non-default config values."""
         mc = MemoryConfig(
-            rollout_mode="shadow",
             graph_enabled=True,
             reranker={"mode": "disabled", "alpha": 0.8},
             rollout_gate_min_recall_at_k=0.9,
         )
         status = mc.rollout_status()
-        assert status["rollout_mode"] == "shadow"
         assert status["graph_enabled"] is True
         assert status["reranker_mode"] == "disabled"
         assert status["reranker_alpha"] == 0.8

@@ -258,13 +258,11 @@ def test_memory_config_apply_from_constructor(tmp_path: Path) -> None:
     store = MemoryStore(
         tmp_path,
         memory_config=MemoryConfig(
-            rollout_mode="disabled",
             router_enabled=False,
             rollout_gate_min_recall_at_k=0.66,
         ),
     )
     mc = store.memory_config
-    assert mc.rollout_mode == "disabled"
     assert mc.router_enabled is False
     assert abs(mc.rollout_gate_min_recall_at_k - 0.66) < 1e-9
 
@@ -285,7 +283,6 @@ def test_workspace_rollout_file_is_ignored(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path)
     mc = store.memory_config
     # Defaults remain active because workspace rollout files are no longer loaded.
-    assert mc.rollout_mode == "enabled"
     assert mc.router_enabled is True
 
 

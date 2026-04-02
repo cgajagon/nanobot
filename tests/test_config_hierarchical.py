@@ -29,10 +29,9 @@ class TestAgentConfigHierarchical:
         ac = AgentConfig(
             workspace="/tmp/test",
             model="test",
-            memory=MemoryConfig(window=50, rollout_mode="disabled"),
+            memory=MemoryConfig(window=50),
         )
         assert ac.memory.window == 50
-        assert ac.memory.rollout_mode == "disabled"
 
     def test_feature_flags(self):
         ac = AgentConfig(workspace="/tmp/test", model="test")
@@ -50,11 +49,11 @@ class TestAgentConfigHierarchical:
             {
                 "workspace": "/tmp/test",
                 "model": "test",
-                "memory": {"window": 50, "reranker": {"mode": "shadow"}},
+                "memory": {"window": 50, "reranker": {"mode": "disabled"}},
             }
         )
         assert ac.memory.window == 50
-        assert ac.memory.reranker.mode == "shadow"
+        assert ac.memory.reranker.mode == "disabled"
 
     def test_from_raw_with_overrides(self):
         ac = AgentConfig.from_raw(
@@ -111,11 +110,10 @@ class TestConfigRoundTrip:
                 "window": 50,
                 "retrieval_k": 10,
                 "token_budget": 500,
-                "rollout_mode": "shadow",
                 "micro_extraction_enabled": True,
                 "micro_extraction_model": "gpt-4o-mini",
                 "graph_enabled": True,
-                "reranker": {"mode": "shadow", "alpha": 0.8, "model": "custom/m"},
+                "reranker": {"mode": "enabled", "alpha": 0.8, "model": "custom/m"},
                 "vector": {"user_id": "custom", "add_debug": True},
             },
             "mission": {"max_concurrent": 5, "max_iterations": 30},
@@ -143,14 +141,14 @@ class TestConfigRoundTrip:
             "workspace": "/tmp/t",
             "model": "test",
             "max_tokens": 16384,
-            "memory": {"token_budget": 500, "reranker": {"mode": "shadow"}},
+            "memory": {"token_budget": 500, "reranker": {"mode": "disabled"}},
             "mission": {"max_concurrent": 5},
         }
         ac = AgentConfig.model_validate(snake_json)
         dumped = ac.model_dump()
         assert dumped["max_tokens"] == 16384
         assert dumped["memory"]["token_budget"] == 500
-        assert dumped["memory"]["reranker"]["mode"] == "shadow"
+        assert dumped["memory"]["reranker"]["mode"] == "disabled"
         assert dumped["mission"]["max_concurrent"] == 5
 
 
@@ -220,12 +218,9 @@ class TestConfigCompleteness:
                 "uncertainty_threshold": 0.3,
                 "enable_contradiction_check": False,
                 "conflict_auto_resolve_gap": 0.5,
-                "rollout_mode": "shadow",
                 "type_separation_enabled": False,
                 "router_enabled": False,
                 "reflection_enabled": False,
-                "shadow_mode": True,
-                "shadow_sample_rate": 0.5,
                 "vector_health_enabled": False,
                 "auto_reindex_on_empty_vector": False,
                 "history_fallback_enabled": True,
@@ -239,7 +234,7 @@ class TestConfigCompleteness:
                 "micro_extraction_enabled": True,
                 "micro_extraction_model": "gpt-4o-mini",
                 "raw_turn_ingestion": False,
-                "reranker": {"mode": "shadow", "alpha": 0.8, "model": "custom/model"},
+                "reranker": {"mode": "disabled", "alpha": 0.8, "model": "custom/model"},
                 "vector": {
                     "user_id": "custom",
                     "add_debug": True,
@@ -257,12 +252,9 @@ class TestConfigCompleteness:
         assert m.uncertainty_threshold == 0.3
         assert m.enable_contradiction_check is False
         assert m.conflict_auto_resolve_gap == 0.5
-        assert m.rollout_mode == "shadow"
         assert m.type_separation_enabled is False
         assert m.router_enabled is False
         assert m.reflection_enabled is False
-        assert m.shadow_mode is True
-        assert m.shadow_sample_rate == 0.5
         assert m.vector_health_enabled is False
         assert m.auto_reindex_on_empty_vector is False
         assert m.history_fallback_enabled is True
@@ -275,7 +267,7 @@ class TestConfigCompleteness:
         assert m.micro_extraction_enabled is True
         assert m.micro_extraction_model == "gpt-4o-mini"
         assert m.raw_turn_ingestion is False
-        assert m.reranker.mode == "shadow"
+        assert m.reranker.mode == "disabled"
         assert m.reranker.alpha == 0.8
         assert m.reranker.model == "custom/model"
         assert m.vector.user_id == "custom"
