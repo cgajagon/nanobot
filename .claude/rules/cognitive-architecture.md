@@ -192,7 +192,7 @@ async def run(state: TurnState) -> TurnResult:
         response = call_llm(messages, tools)
 
         if llm_error:
-            handle_error_with_retry()
+            handle_error_with_retry()  # see LLM Error Handling below
             continue
 
         # -- Tool path --
@@ -224,6 +224,27 @@ async def run(state: TurnState) -> TurnResult:
 
     return TurnResult(content, tools_used, messages, token_counts)
 ```
+
+### LLM Error Handling
+
+When the LLM returns `finish_reason="error"` (API failures, rate limits, timeouts),
+the loop retries with exponential backoff:
+
+- **Threshold:** 5 consecutive errors before giving up
+- **Backoff:** `min(2^attempt, 30)` seconds — i.e. 2s, 4s, 8s, 16s, 30s
+- **Fallback:** Generic "trouble reaching the language model" message
+
+The 5-retry / 30s-max-backoff is tuned for Anthropic's 60-second rate limit window.
+Total retry span is ~60s, giving the rate window time to drain.
+
+This is distinct from **tool-level failure handling** (FailureEscalation guardrail),
+which disables specific tools after repeated failures. LLM-level errors affect the
+entire model connection, not individual tools.
+
+**Rate limiter coordination:** The `RateLimiter` (50k tokens/min rolling window) is
+shared between `StreamingLLMCaller` (main turns) and `ConsolidationOrchestrator`
+(background memory consolidation). Both call `wait_if_needed()` before and `record()`
+after LLM calls, preventing concurrent API competition.
 
 ### Working Memory (Per-Turn State)
 
