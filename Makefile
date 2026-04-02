@@ -4,10 +4,12 @@ PYTHON ?= python
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
+	pre-commit install
 
 install-all:
 	$(PYTHON) -m pip install -e ".[dev,oauth]"
 	cd bridge && npm install
+	pre-commit install
 
 test:  ## Fast unit tests only (every edit)
 	$(PYTHON) -m pytest tests/ --ignore=tests/integration -x -q
