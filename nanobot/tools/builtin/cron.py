@@ -129,11 +129,48 @@ class CronTool(Tool):
         return ToolResult.ok(f"Created job '{job.name}' (id: {job.id})")
 
     def _list_jobs(self) -> ToolResult:
-        jobs = self._cron.list_jobs()
+        jobs = self._cron.list_jobs(include_disabled=True)
         if not jobs:
             return ToolResult.ok("No scheduled jobs.")
-        lines = [f"- {j.name} (id: {j.id}, {j.schedule.kind})" for j in jobs]
+        lines: list[str] = []
+        for j in jobs:
+            schedule = self._format_schedule(j.schedule)
+            status = "enabled" if j.enabled else "disabled"
+            last_run = self._format_ts(j.state.last_run_at_ms)
+            next_run = self._format_ts(j.state.next_run_at_ms)
+            last_status = j.state.last_status or "never run"
+            line = (
+                f"- {j.name} (id: {j.id})\n"
+                f"  Schedule: {schedule} | Status: {status}\n"
+                f"  Last run: {last_run} ({last_status}) | Next: {next_run}"
+            )
+            if j.state.last_error:
+                line += f"\n  Error: {j.state.last_error}"
+            lines.append(line)
         return ToolResult.ok("Scheduled jobs:\n" + "\n".join(lines))
+
+    @staticmethod
+    def _format_ts(ms: int | None) -> str:
+        if ms is None:
+            return "never"
+        from datetime import datetime, timezone
+
+        dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+    @staticmethod
+    def _format_schedule(schedule: CronSchedule) -> str:
+        if schedule.kind == "every":
+            seconds = (schedule.every_ms or 0) // 1000
+            if seconds >= 3600:
+                return f"every {seconds // 3600}h"
+            if seconds >= 60:
+                return f"every {seconds // 60}m"
+            return f"every {seconds}s"
+        if schedule.kind == "cron":
+            expr = schedule.expr or ""
+            return f"{expr} ({schedule.tz})" if schedule.tz else expr
+        return "one-time"
 
     def _enable_job(self, job_id: str | None, *, enabled: bool) -> ToolResult:
         if not job_id:

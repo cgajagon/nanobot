@@ -96,9 +96,16 @@ class TestCronToolExecute:
         assert "no" in result.output.lower()
 
     async def test_list_with_jobs(self, cron_tool: CronTool):
-        job = MagicMock(id="j1")
-        job.name = "reminder"
-        job.schedule.kind = "every"
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j1",
+            name="reminder",
+            enabled=True,
+            schedule=CronSchedule(kind="every", every_ms=60000),
+            payload=CronPayload(message="remind me"),
+            state=CronJobState(),
+        )
         cron_tool._cron.list_jobs.return_value = [job]
         result = await cron_tool.execute(action="list")
         assert result.success
@@ -125,11 +132,23 @@ class _FakeCron:
         self.jobs: dict[str, SimpleNamespace] = {}
 
     def add_job(self, **kwargs):
-        job = SimpleNamespace(id="job-1", name=kwargs["name"], schedule=kwargs["schedule"])
+        state = SimpleNamespace(
+            last_run_at_ms=None,
+            next_run_at_ms=None,
+            last_status=None,
+            last_error=None,
+        )
+        job = SimpleNamespace(
+            id="job-1",
+            name=kwargs["name"],
+            schedule=kwargs["schedule"],
+            enabled=True,
+            state=state,
+        )
         self.jobs[job.id] = job
         return job
 
-    def list_jobs(self):
+    def list_jobs(self, include_disabled: bool = False):
         return list(self.jobs.values())
 
     def remove_job(self, job_id: str) -> bool:
@@ -199,6 +218,69 @@ class TestCronToolEnableDisable:
         result = await cron_tool.execute(action="enable", job_id="missing")
         assert not result.success
         assert "not found" in result.output.lower()
+
+
+class TestCronToolRichList:
+    async def test_list_shows_schedule_details(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j1",
+            name="Daily Report",
+            enabled=True,
+            schedule=CronSchedule(kind="cron", expr="0 9 * * *", tz="America/Vancouver"),
+            payload=CronPayload(message="check emails"),
+            state=CronJobState(
+                next_run_at_ms=1743984000000,
+                last_run_at_ms=1743897600000,
+                last_status="ok",
+            ),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "Daily Report" in result.output
+        assert "j1" in result.output
+        assert "0 9 * * *" in result.output
+        assert "enabled" in result.output.lower()
+        assert "ok" in result.output.lower()
+
+    async def test_list_shows_error_when_present(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j2",
+            name="Broken Task",
+            enabled=True,
+            schedule=CronSchedule(kind="every", every_ms=3600000),
+            payload=CronPayload(message="failing task"),
+            state=CronJobState(
+                last_run_at_ms=1743897600000,
+                last_status="error",
+                last_error="API timeout",
+            ),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "error" in result.output.lower()
+        assert "API timeout" in result.output
+
+    async def test_list_shows_disabled_jobs(self, cron_tool: CronTool) -> None:
+        from nanobot.cron.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+        job = CronJob(
+            id="j3",
+            name="Paused Job",
+            enabled=False,
+            schedule=CronSchedule(kind="every", every_ms=60000),
+            payload=CronPayload(message="paused"),
+            state=CronJobState(),
+        )
+        cron_tool._cron.list_jobs.return_value = [job]
+        result = await cron_tool.execute(action="list")
+        assert result.success
+        assert "disabled" in result.output.lower()
 
 
 async def test_cron_tool_execute_dispatch() -> None:
