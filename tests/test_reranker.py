@@ -44,8 +44,8 @@ def _make_items(n: int = 5) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-class TestBackwardCompatAlias:
-    """CrossEncoderReranker is aliased to OnnxCrossEncoderReranker in __init__.py."""
+class TestOnnxRerankerImport:
+    """OnnxCrossEncoderReranker is importable from onnx_reranker module."""
 
     def test_alias_importable(self) -> None:
         from nanobot.memory.ranking.onnx_reranker import (
@@ -53,31 +53,6 @@ class TestBackwardCompatAlias:
         )
 
         assert CrossEncoderReranker is OnnxCrossEncoderReranker
-
-
-# ---------------------------------------------------------------------------
-# CompositeReranker compute_rank_delta tests
-# ---------------------------------------------------------------------------
-
-
-class TestComputeRankDelta:
-    def test_identical_order_zero_delta(self) -> None:
-        reranker = CompositeReranker()
-        ids = ["a", "b", "c"]
-        assert reranker.compute_rank_delta(ids, ids) == 0.0
-
-    def test_reversed_order_positive_delta(self) -> None:
-        reranker = CompositeReranker()
-        delta = reranker.compute_rank_delta(["a", "b", "c"], ["c", "b", "a"])
-        assert delta > 0.0
-
-    def test_disjoint_sets_zero_delta(self) -> None:
-        reranker = CompositeReranker()
-        assert reranker.compute_rank_delta(["a"], ["b"]) == 0.0
-
-    def test_empty_lists(self) -> None:
-        reranker = CompositeReranker()
-        assert reranker.compute_rank_delta([], []) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +88,7 @@ class TestRerankerRolloutGating:
         # When ONNX is available, uses OnnxCrossEncoderReranker; otherwise falls back
         assert isinstance(store._reranker, (OnnxCrossEncoderReranker, CompositeReranker))
 
-    def test_env_override_reranker_mode(self, tmp_path, monkeypatch) -> None:
+    def test_explicit_reranker_mode_disabled(self, tmp_path) -> None:
         from nanobot.config.memory import MemoryConfig, RerankerConfig
         from nanobot.memory.store import MemoryStore
 
@@ -288,17 +263,3 @@ class TestCompositeRerankerEmptyInput:
         reranker = CompositeReranker()
         result = reranker.rerank("any query", [])
         assert result == []
-
-    def test_compute_rank_delta_empty(self) -> None:
-        reranker = CompositeReranker()
-        assert reranker.compute_rank_delta([], []) == 0.0
-
-    def test_compute_rank_delta_identical(self) -> None:
-        reranker = CompositeReranker()
-        ids = ["a", "b", "c"]
-        assert reranker.compute_rank_delta(ids, ids) == 0.0
-
-    def test_compute_rank_delta_reversed(self) -> None:
-        reranker = CompositeReranker()
-        delta = reranker.compute_rank_delta(["a", "b", "c"], ["c", "b", "a"])
-        assert delta > 0.0

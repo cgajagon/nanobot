@@ -209,21 +209,3 @@ class OnnxCrossEncoderReranker:
         # Sort by blended score descending
         items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         return items
-
-    def compute_rank_delta(
-        self,
-        heuristic_order: list[str],
-        reranked_order: list[str],
-    ) -> float:
-        """Return average absolute rank displacement between two orderings.
-
-        Both lists are expected to contain item IDs in their respective order.
-        Items present in only one list are ignored.
-        """
-        common = set(heuristic_order) & set(reranked_order)
-        if not common:
-            return 0.0
-        h_rank = {uid: i for i, uid in enumerate(heuristic_order) if uid in common}
-        r_rank = {uid: i for i, uid in enumerate(reranked_order) if uid in common}
-        total = sum(abs(h_rank[uid] - r_rank[uid]) for uid in common)
-        return total / len(common)

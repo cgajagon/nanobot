@@ -255,37 +255,3 @@ class TestOnnxRerankerModelDownload:
 
         assert result is False
         assert reranker._session is None
-
-
-# ---------------------------------------------------------------------------
-# TestComputeRankDelta
-# ---------------------------------------------------------------------------
-
-
-class TestComputeRankDelta:
-    """compute_rank_delta matches CompositeReranker implementation."""
-
-    def test_identical_order(self) -> None:
-        reranker = OnnxCrossEncoderReranker()
-        delta = reranker.compute_rank_delta(["a", "b", "c"], ["a", "b", "c"])
-        assert delta == 0.0
-
-    def test_reversed_order(self) -> None:
-        reranker = OnnxCrossEncoderReranker()
-        delta = reranker.compute_rank_delta(["a", "b", "c"], ["c", "b", "a"])
-        # a: |0-2|=2, b: |1-1|=0, c: |2-0|=2 => avg = 4/3
-        assert abs(delta - 4 / 3) < 1e-9
-
-    def test_empty_lists(self) -> None:
-        reranker = OnnxCrossEncoderReranker()
-        assert reranker.compute_rank_delta([], []) == 0.0
-
-    def test_no_common_items(self) -> None:
-        reranker = OnnxCrossEncoderReranker()
-        assert reranker.compute_rank_delta(["a"], ["b"]) == 0.0
-
-    def test_partial_overlap(self) -> None:
-        reranker = OnnxCrossEncoderReranker()
-        delta = reranker.compute_rank_delta(["a", "b", "x"], ["b", "a", "y"])
-        # common: a, b; a: |0-1|=1, b: |1-0|=1 => avg = 1.0
-        assert delta == 1.0

@@ -535,7 +535,7 @@ Query arrives
 |  |  +- reflection_penalty: -0.06 (when recency-weighted)
 |  +- Graph entity match boost: +0.15
 |
-+- 9. Cross-encoder reranking (enabled | shadow | disabled)
++- 9. Cross-encoder reranking (enabled | disabled)
 |  +- CompositeReranker: lexical(0.30) + entity(0.20) + bm25(0.25) +
 |  |   recency(0.15, 30-day simple exp decay) + type_match(0.10)
 |  +- OnnxCrossEncoderReranker: ms-marco-MiniLM-L-6-v2 via ONNX Runtime
@@ -683,7 +683,7 @@ All memory parameters live in `MemoryConfig` (`nanobot/config/memory.py`) unless
 
 | Config field | Default | Controls |
 |-------------|---------|----------|
-| `reranker.mode` | "enabled" | Cross-encoder reranking mode (enabled/shadow/disabled) |
+| `reranker.mode` | "enabled" | Cross-encoder reranking mode (enabled/disabled) |
 | `reranker.alpha` | 0.5 | Reranker score blending weight (0.0-1.0) |
 | `reranker.model` | "onnx:ms-marco-MiniLM-L-6-v2" | Reranker model identifier |
 
@@ -691,11 +691,9 @@ All memory parameters live in `MemoryConfig` (`nanobot/config/memory.py`) unless
 
 | Config field | Default | Controls |
 |-------------|---------|----------|
-| `memory.rollout_mode` | "enabled" | Rollout mode (enabled/shadow/disabled) |
 | `memory.type_separation_enabled` | true | Separate memory types in retrieval scoring |
 | `memory.router_enabled` | true | Enable retrieval intent routing |
 | `memory.reflection_enabled` | true | Enable reflection memories |
-| `memory.shadow_mode` | false | Shadow mode for A/B testing |
 | `memory.auto_reindex_on_empty_vector` | true | Auto-reindex when vector table empty |
 
 ### Kill Switches

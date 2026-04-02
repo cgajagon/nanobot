@@ -459,10 +459,9 @@ Query text
                             │
 ┌───────────────────────────▼─────────────────────────┐
 │  Stage 8: RERANK                                     │
-│  Mode: enabled | shadow | disabled                   │
+│  Mode: enabled | disabled                            │
 │  CompositeReranker: 5 signals, alpha-blended         │
 │  OnnxCE: cross-encoder + alpha-blended               │
-│  Shadow: computes but returns original order          │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
@@ -744,7 +743,7 @@ Other tools contribute indirectly via tool hints that become provenance strings.
 
 ### Adding a New Reranker
 
-1. Create a class satisfying the `Reranker` protocol (available, rerank, compute_rank_delta)
+1. Create a class satisfying the `Reranker` protocol (available, rerank)
 2. Add selection logic in `MemoryStore.__init__` reranker construction
 3. No changes to RetrievalScorer or any other consumer
 
@@ -797,7 +796,7 @@ All other items resolved:
 |------|-----------|
 | Private method cross-call | **Fixed** — `ingest_graph_triples()` made public on `EventIngester` |
 | Encapsulation leak | **Fixed** — `GraphAugmenter.read_events()` public method added |
-| `compute_rank_delta` discarded | **Fixed** — result now logged at DEBUG level |
+| `compute_rank_delta` discarded | **Removed** — method deleted from protocol and all implementations |
 | Snapshot rebuild discarded | **Fixed** — result now logged at DEBUG level |
 | `search_by_metadata` naming | **Fixed** — param renamed from `memory_type` to `event_type` |
 | Schema coupling via reference | **Fixed** — `copy.deepcopy()` isolates tool schemas |
