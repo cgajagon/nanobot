@@ -137,6 +137,9 @@ class ConsolidationOrchestrator:
         """Record estimated token usage after a consolidation LLM call."""
         if self._rate_limiter is None:
             return
+        # Consolidation sends a truncated digest (~600 chars/msg), not the full
+        # messages.  Dividing the full-message estimate by 4 approximates the
+        # actual prompt tokens.  Floor at 2000 for system-prompt overhead.
         estimated = estimate_messages_tokens(session.messages) // 4
         self._rate_limiter.record(max(2000, estimated))
 
