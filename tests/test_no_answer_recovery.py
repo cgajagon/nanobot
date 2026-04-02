@@ -226,6 +226,19 @@ class TestStripThink:
         result = strip_think("<think>reasoning</think>The answer is 42.")
         assert result == "The answer is 42."
 
+    def test_reasoning_block_stripped(self):
+        """<think> reasoning blocks (from reasoning.md prompt) are stripped."""
+        result = strip_think(
+            "<think>\n1. What does the user need? Summarize a file.\n"
+            "2. What am I looking for? A meeting transcript.\n</think>\n\n"
+            "Here is the summary of the meeting."
+        )
+        assert result == "Here is the summary of the meeting."
+
+    def test_reasoning_block_only_returns_none(self):
+        """A response containing only a reasoning block returns None."""
+        assert strip_think("<think>\n1. What does the user need? Find a project.\n</think>") is None
+
 
 # ---------------------------------------------------------------------------
 # _build_no_answer_explanation tests
