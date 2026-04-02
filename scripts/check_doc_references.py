@@ -31,56 +31,21 @@ LIVING_DOCS = [
 # Classes that are external or conceptual — not expected in nanobot/ source
 KNOWN_EXCEPTIONS = frozenset(
     {
-        # Standard library / third-party
+        # Standard library / third-party (PascalCase, referenced in backticks)
         "Protocol",
-        "SQLite",
-        "FTS5",
-        "OTEL",
-        "ONNX",
         "Exception",
-        "Pydantic",
-        # Conceptual / shorthand references (not actual class names)
-        "BFS",
-        "CTE",
-        "RRF",
-        "CRUD",
-        "DAG",
-        # Generic terms that appear in backticks but aren't classes
-        "check_imports.py",
-        "check_structure.py",
-        "check_prompt_manifest.py",
-        "check_doc_references.py",
-        "agent_factory.py",
-        "tools/setup.py",
-        # Type annotations or protocol references
-        "TYPE_CHECKING",
-        # Python builtins / common terms that match PascalCase
+        # Python builtins that match PascalCase
         "True",
         "False",
         "None",
-        "No",
         # Test-only classes (live in tests/, not nanobot/)
         "ScriptedProvider",
         # Deliberately renamed / historical references documented as warnings
         "MemoryError",
-        # Third-party / external class names
-        "SettingsConfigDict",
-        "TracerProvider",
-        "MetricsCollector",
-        # Cognitive architecture design targets (not yet implemented)
+        # Cognitive architecture design targets (not yet implemented as classes)
         "ContextContributor",
         "MemoryServices",
         "ProceduralMemoryContributor",
-        # Docker / deployment terms
-        "Docker",
-        "Dockerfile",
-        "Caddy",
-        "Grafana",
-        "Prometheus",
-        "WireGuard",
-        "CodeQL",
-        "Dependabot",
-        "Trivy",
     }
 )
 
