@@ -50,7 +50,18 @@ cron(action="add", message="Remind me about the meeting", at="2026-03-10T14:30:0
 ```
 cron(action="list")
 cron(action="remove", job_id="abc123")
+cron(action="enable", job_id="abc123")
+cron(action="disable", job_id="abc123")
 ```
+
+## Updating Jobs
+```
+cron(action="update", job_id="abc123", cron_expr="0 10 * * *")
+cron(action="update", job_id="abc123", message="New prompt for this task")
+cron(action="update", job_id="abc123", every_seconds=7200)
+```
+
+Only provided fields are changed — omitted fields stay as they are.
 
 ## Time Expressions
 
