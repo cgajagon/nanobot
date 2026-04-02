@@ -362,7 +362,7 @@ class TestWorkingMemory:
         tc1 = _make_tool_call("exec", {"cmd": "ls"})
         caller = ScriptedCaller(
             [
-                _tool_response([tc1], content="[REASONING]\n1. Need: list files\n[/REASONING]"),
+                _tool_response([tc1], content="<think>\n1. Need: list files\n</think>"),
                 _text_response("done"),
             ]
         )
@@ -378,7 +378,7 @@ class TestWorkingMemory:
                 asst_msg = m
                 break
         assert asst_msg is not None, "No assistant message with tool_calls found"
-        assert asst_msg["content"] == "[REASONING]\n1. Need: list files\n[/REASONING]", (
+        assert asst_msg["content"] == "<think>\n1. Need: list files\n</think>", (
             "Assistant content was discarded when tool_calls were present"
         )
 
