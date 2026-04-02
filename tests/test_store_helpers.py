@@ -66,6 +66,13 @@ class TestMemoryStoreExtraHelpers:
             ("what constraints apply", "constraints_lookup"),
             ("any conflict pending", "conflict_review"),
             ("what is user preference", "fact_lookup"),
+            # False negative coverage (added Phase 1)
+            ("what's broken in the system", "debug_history"),
+            ("bug in the auth module", "debug_history"),
+            ("there's an issue with deployment", "debug_history"),
+            ("what went wrong last night", "debug_history"),
+            ("what can't we do right now", "constraints_lookup"),
+            ("limitations of the current system", "constraints_lookup"),
         ],
     )
     def test_intent_and_routing_hints(self, query: str, expected: str) -> None:

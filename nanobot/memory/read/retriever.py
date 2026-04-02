@@ -51,6 +51,16 @@ class MemoryRetriever:
         self._db = db
         self._embedder = embedder
 
+    def _vector_weight(self) -> float:
+        """RRF vector weight adapted to embedder semantic quality.
+
+        Returns a lower weight when the embedder produces lower-quality
+        vectors, so FTS5 (keyword matching) dominates the fusion score.
+        """
+        if self._embedder is None:
+            return 0.0
+        return self._embedder.vector_quality
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -125,7 +135,9 @@ class MemoryRetriever:
         )
 
         # 3. Fuse via RRF
-        candidates = self._fuse_results(vec_results, fts_results, vector_weight=0.7)
+        candidates = self._fuse_results(
+            vec_results, fts_results, vector_weight=self._vector_weight()
+        )
 
         if not candidates:
             candidates = await asyncio.to_thread(self._db.read_events, limit=candidate_k)

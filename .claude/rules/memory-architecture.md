@@ -124,11 +124,13 @@ concurrently, then fuses results via Reciprocal Rank Fusion. This ensures retrie
 works even when one source degrades (e.g., HashEmbedder produces meaningless vectors).
 
 **Rationale:** Pure vector search fails when embeddings are low quality (HashEmbedder
-fallback). Pure FTS fails on semantic similarity. RRF fusion with asymmetric weights
-(0.7 vector, 0.3 FTS) captures both signals.
+fallback). Pure FTS fails on semantic similarity. RRF fusion with adaptive weights
+captures both signals. Weights are determined by the embedder's `vector_quality`
+property: OpenAI=0.7, Local=0.5, Hash=0.0 (FTS-only when vectors are meaningless).
 
 **Enforcement:** `MemoryRetriever._retrieve_unified()` always runs both searches via
-`asyncio.gather`. If both return empty, falls back to recency-ordered scan.
+`asyncio.gather`. Vector weight is read from `self._embedder.vector_quality`. If both
+return empty, falls back to recency-ordered scan.
 
 ### Pattern 4: Intent-Driven Retrieval
 
@@ -277,11 +279,11 @@ class Embedder(Protocol):
     def available(self) -> bool: ...
 ```
 
-| Implementation | Model | Dims | Notes |
-|----------------|-------|------|-------|
-| `OpenAIEmbedder` | text-embedding-3-small | 1536 | Default, requires `OPENAI_API_KEY` |
-| `LocalEmbedder` | all-MiniLM-L6-v2 | 384 | ONNX Runtime, mean pooling, 128-token max, thread-safe lazy init |
-| `HashEmbedder` | SHA-256 chain | 384 | Deterministic, no ML, unit-normalized, always available |
+| Implementation | Model | Dims | `vector_quality` | Notes |
+|----------------|-------|------|-----------------|-------|
+| `OpenAIEmbedder` | text-embedding-3-small | 1536 | 0.7 | Default, requires `OPENAI_API_KEY` |
+| `LocalEmbedder` | all-MiniLM-L6-v2 | 384 | 0.5 | ONNX Runtime, mean pooling, 128-token max, thread-safe lazy init |
+| `HashEmbedder` | SHA-256 chain | 384 | 0.0 | Deterministic, no ML, unit-normalized, always available |
 
 Selection cascades through fallbacks: OpenAI -> Hash (default), Local -> Hash (when
 `embedding_provider="local"`). `HashEmbedder` produces structurally valid but
@@ -430,7 +432,7 @@ Query text
 ┌───────────────────────────▼─────────────────────────┐
 │  Stage 4: RRF FUSION                                 │
 │  score(doc) = Σ weight_i / (60 + rank_i)            │
-│  vector_weight=0.7, fts_weight=0.3                   │
+│  vector_weight=embedder.vector_quality (adaptive)    │
 │  Stored in item["score"] and item["_rrf_score"]      │
 └───────────────────────────┬─────────────────────────┘
                             │
@@ -451,7 +453,7 @@ Query text
 │  score = RRF base_score                               │
 │         + profile_adjustment (±0.20 max)             │
 │         + type_boost (per intent, ±0.30)             │
-│         + 0.08 × recency (half-life decay)           │
+│         + 0.15 × recency (half-life decay)           │
 │         + stability_boost (+0.03 / +0.01 / -0.02)   │
 │         + reflection_penalty (-0.06)                 │
 │         + graph_entity_boost (+0.15)                 │

@@ -61,6 +61,10 @@ class TestLocalEmbedder:
         sim_different = cosine(v1, v3)
         assert sim_similar > sim_different
 
+    def test_vector_quality_is_0_5(self):
+        e = LocalEmbedder()
+        assert e.vector_quality == pytest.approx(0.5)
+
 
 class TestHashEmbedder:
     def test_available_is_true(self):
@@ -99,6 +103,10 @@ class TestHashEmbedder:
         results = await e.embed_batch(["a", "b"])
         assert len(results) == 2
         assert len(results[0]) == 4
+
+    def test_vector_quality_is_0(self):
+        e = HashEmbedder(dims=384)
+        assert e.vector_quality == pytest.approx(0.0)
 
     async def test_works_with_sqlite_vec(self, tmp_path):
         """HashEmbedder vectors work with MemoryDatabase KNN search."""

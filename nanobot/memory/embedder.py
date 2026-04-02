@@ -29,6 +29,9 @@ class Embedder(Protocol):
     @property
     def available(self) -> bool: ...
 
+    @property
+    def vector_quality(self) -> float: ...
+
 
 class OpenAIEmbedder:
     """Production embedder using OpenAI text-embedding-3-small (1536 dims).
@@ -54,6 +57,10 @@ class OpenAIEmbedder:
     @property
     def available(self) -> bool:
         return self._client is not None
+
+    @property
+    def vector_quality(self) -> float:
+        return 0.7
 
     async def embed(self, text: str) -> list[float]:
         if self._client is None:
@@ -128,6 +135,10 @@ class LocalEmbedder:
         except (ImportError, OSError):
             return False
 
+    @property
+    def vector_quality(self) -> float:
+        return 0.5
+
     async def embed(self, text: str) -> list[float]:
         return (await self.embed_batch([text]))[0]
 
@@ -184,6 +195,10 @@ class HashEmbedder:
     @property
     def available(self) -> bool:
         return True
+
+    @property
+    def vector_quality(self) -> float:
+        return 0.0
 
     async def embed(self, text: str) -> list[float]:
         return self._hash_to_vector(text)
