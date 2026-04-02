@@ -610,7 +610,7 @@ class TestRRFFusion:
 class TestAdaptiveVectorWeight:
     """_vector_weight returns weight based on embedder semantic quality."""
 
-    def test_unknown_embedder_falls_back_to_high_weight(self) -> None:
+    def test_delegates_to_embedder_vector_quality(self) -> None:
         retriever = _make_retriever()
         mock_embedder = MagicMock()
         mock_embedder.vector_quality = 0.7
