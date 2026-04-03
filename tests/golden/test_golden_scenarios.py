@@ -432,7 +432,7 @@ class TestGoldenConsecutiveErrorFallback:
         result = await loop._process_message(_make_inbound("hi"))
 
         assert result is not None
-        assert "trouble" in result.content.lower() or "try again" in result.content.lower()
+        assert "trouble" in result.content.lower() or "language model" in result.content.lower()
         # The agent should have called the LLM 5 times before giving up
         assert len(provider.call_log) == 5
 

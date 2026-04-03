@@ -590,7 +590,7 @@ class TurnRunner:
                 "LLM returned error (attempt {}): {}", state.consecutive_errors, response.content
             )
             if state.consecutive_errors >= 5:
-                fc = "I'm having trouble reaching the language model right now. Please try again in a moment."
+                fc = _build_error_with_progress(state)
                 state.messages[:] = self._context.add_assistant_message(state.messages, fc)
                 return "break", fc
             if on_progress:
@@ -602,7 +602,7 @@ class TurnRunner:
             state.consecutive_errors += 1
             logger.warning("Content filter triggered (attempt {})", state.consecutive_errors)
             if state.consecutive_errors >= 2:
-                fc = "The AI provider's content filter blocked my response. Try rephrasing your question."
+                fc = _build_error_with_progress(state, error_type="content_filter")
                 state.messages[:] = self._context.add_assistant_message(state.messages, fc)
                 return "break", fc
             await asyncio.sleep(1)
@@ -614,12 +614,54 @@ class TurnRunner:
                 "Response truncated to zero content (attempt {})", state.consecutive_errors
             )
             if state.consecutive_errors >= 2:
-                fc = (
-                    "My response was too long and got cut off. Try asking a more specific question."
-                )
+                fc = _build_error_with_progress(state, error_type="length")
                 state.messages[:] = self._context.add_assistant_message(state.messages, fc)
                 return "break", fc
             await asyncio.sleep(1)
             return "continue", None
 
         return "proceed", None
+
+
+def _build_error_with_progress(
+    state: TurnState,
+    error_type: str = "error",
+) -> str:
+    """Build an error message that summarizes what was accomplished.
+
+    Only considers tool results from the current turn -- messages after the
+    last user message -- not the full history.
+
+    *error_type* selects the fallback wording when no tools ran:
+    ``"error"`` (default), ``"content_filter"``, or ``"length"``.
+    """
+    last_user_idx = 0
+    for i, m in enumerate(state.messages):
+        if m.get("role") == "user":
+            last_user_idx = i
+
+    tool_summaries: list[str] = []
+    for m in state.messages[last_user_idx + 1 :]:
+        if m.get("role") == "tool" and m.get("name"):
+            tool_summaries.append(f"- {m['name']}")
+
+    if not tool_summaries:
+        if error_type == "content_filter":
+            return (
+                "The AI provider's content filter blocked my response. "
+                "Try rephrasing your question."
+            )
+        if error_type == "length":
+            return "My response was too long and got cut off. Try asking a more specific question."
+        return (
+            "I'm having trouble reaching the language model right now. "
+            "Please try again in a moment."
+        )
+
+    progress = "\n".join(tool_summaries[:5])
+    return (
+        "I was working on your request but the language model became unavailable.\n\n"
+        f"Progress before the error:\n{progress}\n\n"
+        f'Your message: "{state.user_text[:200]}"\n\n'
+        'Please repeat your message or say "continue" to resume.'
+    )

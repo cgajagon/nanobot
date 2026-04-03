@@ -215,6 +215,15 @@ class MessageProcessor:
             chat_id=msg.chat_id,
         )
 
+        # Defensive persistence: save the user message to the session
+        # immediately, before orchestration. This ensures the user's input
+        # survives even if the orchestrator crashes with an unhandled exception.
+        # Note: this saves msg.content (raw text) rather than the LLM-facing
+        # message which includes runtime context from _inject_runtime_context.
+        # This is intentional — runtime context is ephemeral.
+        session.add_message("user", msg.content)
+        self.sessions.save(session)
+
         # Build canonical event builder scoped to this request
         _turn_num = len(session.messages) // 2
         _canonical_message_id = "msg_asst_" + uuid.uuid4().hex[:12]
@@ -251,86 +260,105 @@ class MessageProcessor:
                 )
             )
 
-        final_content, tools_used, all_msgs = await self._run_orchestrator(
-            initial_messages,
-            on_progress=((on_progress or _bus_progress) if self.config.streaming_enabled else None),
-        )
+        # _skip accounts for: system prompt + history + the pre-saved user message.
+        # _save_turn(messages[_skip:]) will only append assistant/tool messages.
+        _skip = 1 + len(history) + 1
+        all_msgs = initial_messages
 
-        if final_content is None:
-            _recovered = await self._attempt_recovery(
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                all_msgs=all_msgs,
+        try:
+            final_content, tools_used, all_msgs = await self._run_orchestrator(
+                initial_messages,
+                on_progress=(
+                    (on_progress or _bus_progress) if self.config.streaming_enabled else None
+                ),
             )
-            if isinstance(_recovered, str):
-                final_content = _recovered
 
-        if final_content is None:
-            # Ensure all_msgs is a real list for _build_no_answer_explanation.
-            _safe_msgs: list[dict[str, Any]] = all_msgs if isinstance(all_msgs, list) else []
-            final_content = _build_no_answer_explanation(msg.content, _safe_msgs)
-            _added = self.context.add_assistant_message(_safe_msgs, final_content)
-            if isinstance(_added, list):
-                all_msgs = _added
+            if final_content is None:
+                _recovered = await self._attempt_recovery(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    all_msgs=all_msgs,
+                )
+                if isinstance(_recovered, str):
+                    final_content = _recovered
 
-        # Ensure final_content is a real string for downstream consumers.
-        if not isinstance(final_content, str):
-            final_content = str(final_content) if final_content else ""
+            if final_content is None:
+                # Ensure all_msgs is a real list for _build_no_answer_explanation.
+                _safe_msgs: list[dict[str, Any]] = all_msgs if isinstance(all_msgs, list) else []
+                final_content = _build_no_answer_explanation(msg.content, _safe_msgs)
+                _added = self.context.add_assistant_message(_safe_msgs, final_content)
+                if isinstance(_added, list):
+                    all_msgs = _added
 
-        # Sync token counters from the loop (where _run_agent_loop updates them)
-        self._sync_token_counters()
+            # Ensure final_content is a real string for downstream consumers.
+            if not isinstance(final_content, str):
+                final_content = str(final_content) if final_content else ""
 
-        # Annotate the active langfuse span with request metadata + output.
-        # Resolve update_current_span via _span_module (late binding) so that
-        # tests patching nanobot.agent.loop.update_current_span take effect.
-        _update_span = (
-            getattr(self._span_module, "update_current_span", update_current_span)
-            if self._span_module is not None
-            else update_current_span
-        )
-        _update_span(
-            output=final_content[:500] if final_content else None,
-            metadata={
-                "channel": msg.channel,
-                "sender": msg.sender_id,
-                "model": self.model,
-                "role": self.role_name,
-                "session_key": key,
-                "llm_calls": self._turn_llm_calls,
-                "prompt_tokens": self._turn_tokens_prompt,
-                "completion_tokens": self._turn_tokens_completion,
-                "cache_creation_tokens": self._turn_cache_creation_tokens,
-                "cache_read_tokens": self._turn_cache_read_tokens,
-                "duration_ms": round((time.monotonic() - t0_request) * 1000),
-            },
-        )
+            # Sync token counters from the loop (where _run_agent_loop updates them)
+            self._sync_token_counters()
 
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
-        logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+            # Annotate the active langfuse span with request metadata + output.
+            # Resolve update_current_span via _span_module (late binding) so that
+            # tests patching nanobot.agent.loop.update_current_span take effect.
+            _update_span = (
+                getattr(self._span_module, "update_current_span", update_current_span)
+                if self._span_module is not None
+                else update_current_span
+            )
+            _update_span(
+                output=final_content[:500] if final_content else None,
+                metadata={
+                    "channel": msg.channel,
+                    "sender": msg.sender_id,
+                    "model": self.model,
+                    "role": self.role_name,
+                    "session_key": key,
+                    "llm_calls": self._turn_llm_calls,
+                    "prompt_tokens": self._turn_tokens_prompt,
+                    "completion_tokens": self._turn_tokens_completion,
+                    "cache_creation_tokens": self._turn_cache_creation_tokens,
+                    "cache_read_tokens": self._turn_cache_read_tokens,
+                    "duration_ms": round((time.monotonic() - t0_request) * 1000),
+                },
+            )
 
-        # Request audit line
-        duration_ms = (time.monotonic() - t0_request) * 1000
-        bind_trace().info(
-            "request_complete | {ch}:{cid} | {dur:.0f}ms | model={mdl}"
-            " | tools={tc} | len={rlen}"
-            " | llm_calls={lc} | prompt_tokens={pt} | completion_tokens={ct}"
-            " | cache_write={cw} | cache_read={cr}",
-            ch=msg.channel,
-            cid=msg.chat_id,
-            dur=duration_ms,
-            mdl=self.model,
-            tc=len(tools_used),
-            rlen=len(final_content),
-            lc=self._turn_llm_calls,
-            pt=self._turn_tokens_prompt,
-            ct=self._turn_tokens_completion,
-            cw=self._turn_cache_creation_tokens,
-            cr=self._turn_cache_read_tokens,
-        )
+            preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+            logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
-        if isinstance(all_msgs, list):
-            self._save_turn(session, all_msgs, 1 + len(history))
-        self.sessions.save(session)
+            # Request audit line
+            duration_ms = (time.monotonic() - t0_request) * 1000
+            bind_trace().info(
+                "request_complete | {ch}:{cid} | {dur:.0f}ms | model={mdl}"
+                " | tools={tc} | len={rlen}"
+                " | llm_calls={lc} | prompt_tokens={pt} | completion_tokens={ct}"
+                " | cache_write={cw} | cache_read={cr}",
+                ch=msg.channel,
+                cid=msg.chat_id,
+                dur=duration_ms,
+                mdl=self.model,
+                tc=len(tools_used),
+                rlen=len(final_content),
+                lc=self._turn_llm_calls,
+                pt=self._turn_tokens_prompt,
+                ct=self._turn_tokens_completion,
+                cw=self._turn_cache_creation_tokens,
+                cr=self._turn_cache_read_tokens,
+            )
+
+            if isinstance(all_msgs, list):
+                self._save_turn(session, all_msgs, _skip)
+            self.sessions.save(session)
+        except Exception:  # crash-barrier: save partial state then re-raise
+            # Error-path save: persist any partial state (tool results
+            # accumulated before the crash). The pre-saved user message
+            # is already on disk from the defensive save above.
+            if isinstance(all_msgs, list) and len(all_msgs) > _skip:
+                try:
+                    self._save_turn(session, all_msgs, _skip)
+                    self.sessions.save(session)
+                except Exception:  # crash-barrier: error-path save is best-effort
+                    logger.warning("Failed to save partial state on error path")
+            raise
 
         # Micro-extraction: per-turn memory extraction (async, non-blocking)
         # Only on the primary path where agent produced a substantive response.

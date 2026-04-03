@@ -238,7 +238,7 @@ class TestAgentLoopConsecutiveErrors:
         result = await loop._process_message(_make_inbound("Hello"))
 
         assert result is not None
-        assert "trouble" in result.content.lower() or "try again" in result.content.lower()
+        assert "trouble" in result.content.lower() or "language model" in result.content.lower()
 
 
 class TestAgentLoopNudgeFinalAnswer:
