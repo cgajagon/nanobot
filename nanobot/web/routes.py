@@ -20,6 +20,7 @@ from nanobot.web.models import (
     ChatRequest,
     HistoryMessage,
     HistoryResponse,
+    RenameThreadRequest,
     ThreadInfo,
     ThreadListResponse,
 )
@@ -46,6 +47,10 @@ def _thread_id(session_key: str) -> str:
 
 
 def _thread_title(session: object) -> str:
+    metadata: dict[str, object] = getattr(session, "metadata", {})
+    title = metadata.get("title")
+    if isinstance(title, str) and title:
+        return title
     messages: list[dict] = getattr(session, "messages", [])
     for m in messages:
         if m.get("role") == "user":
@@ -355,6 +360,17 @@ async def delete_thread(request: Request, thread_id: str):
     if path.exists():
         path.unlink()
     return {"status": "ok", "threadId": thread_id}
+
+
+@router.patch("/threads/{thread_id}")
+async def rename_thread(request: Request, thread_id: str, body: RenameThreadRequest):
+    """Rename a thread by updating its title in session metadata."""
+    session_manager = request.app.state.session_manager
+    session_key = _session_key(thread_id)
+    session = session_manager.get_or_create(session_key)
+    session.metadata["title"] = body.title
+    session_manager.save(session)
+    return {"status": "ok"}
 
 
 @router.get("/threads/{thread_id}/messages")

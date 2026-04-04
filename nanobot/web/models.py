@@ -94,3 +94,15 @@ class ThreadMessagesResponse(BaseModel):
     """Response from the thread messages endpoint."""
 
     messages: list[ThreadMessageItem]
+
+
+class GenerateTitleResponse(BaseModel):
+    """Response from the title generation endpoint."""
+
+    title: str
+
+
+class RenameThreadRequest(BaseModel):
+    """Request body for renaming a thread."""
+
+    title: str
