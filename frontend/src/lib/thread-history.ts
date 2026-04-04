@@ -2,8 +2,8 @@
  * Thread history adapter for assistant-ui.
  *
  * Loads historical messages from the server when switching to an existing thread.
- * The remoteId is read from the thread list item state provided by
- * useRemoteThreadListRuntime — no mutable variable hack needed.
+ * The remoteId is set via setCurrentThreadRemoteId() from a sync component in
+ * App.tsx, which reads it from useRemoteThreadListRuntime's thread list state.
  */
 
 import { ExportedMessageRepository } from "@assistant-ui/react";

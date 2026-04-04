@@ -6,7 +6,8 @@
  * truth for thread metadata (titles, timestamps, status).
  */
 
-import type { RemoteThreadListAdapter } from "@assistant-ui/react";
+import type { RemoteThreadListAdapter, ThreadMessage } from "@assistant-ui/react";
+import { createAssistantStream } from "assistant-stream";
 
 /** Response shape from GET /api/threads. */
 interface ServerThreadInfo {
@@ -42,32 +43,18 @@ export const threadListAdapter: RemoteThreadListAdapter = {
     return { remoteId: data.threadId as string, externalId: undefined };
   },
 
-  async generateTitle(remoteId: string) {
+  async generateTitle(remoteId: string, _messages: readonly ThreadMessage[]) {
     const response = await fetch(`/api/threads/${remoteId}/generate-title`, {
       method: "POST",
     });
     if (!response.ok) {
-      return new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      });
+      return createAssistantStream(() => {});
     }
     const data = await response.json();
     const title = data.title || "New Chat";
 
-    return new ReadableStream({
-      start(controller) {
-        controller.enqueue({
-          type: "text-delta",
-          textDelta: title,
-        });
-        controller.enqueue({
-          type: "finish",
-          finishReason: "stop",
-        });
-        controller.close();
-      },
+    return createAssistantStream((controller) => {
+      controller.appendText(title);
     });
   },
 
