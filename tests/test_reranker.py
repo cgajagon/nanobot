@@ -55,6 +55,23 @@ class TestOnnxRerankerImport:
         assert CrossEncoderReranker is OnnxCrossEncoderReranker
 
 
+class TestOnnxRerankerModelPath:
+    """Verify the ONNX reranker uses the quantized model variant."""
+
+    def test_model_filename_is_quantized(self) -> None:
+        """The model file must be the quantized variant to stay under protobuf 64MB limit."""
+        from nanobot.memory.ranking.onnx_reranker import _ONNX_MODEL_FILENAME
+
+        assert "quint8" in _ONNX_MODEL_FILENAME or "qint8" in _ONNX_MODEL_FILENAME
+
+    def test_download_url_uses_quantized_variant(self) -> None:
+        """Download path must reference the quantized ONNX file, not model.onnx."""
+        from nanobot.memory.ranking.onnx_reranker import _ONNX_MODEL_REMOTE_PATH
+
+        assert _ONNX_MODEL_REMOTE_PATH != "onnx/model.onnx"
+        assert "quint8" in _ONNX_MODEL_REMOTE_PATH or "qint8" in _ONNX_MODEL_REMOTE_PATH
+
+
 # ---------------------------------------------------------------------------
 # Integration with MemoryStore vector retrieval pipeline (rollout gating)
 # ---------------------------------------------------------------------------
@@ -86,7 +103,7 @@ class TestRerankerRolloutGating:
     def test_reranker_instance_created(self, tmp_path) -> None:
         store = self._make_store(tmp_path, "enabled")
         # When ONNX is available, uses OnnxCrossEncoderReranker; otherwise falls back
-        assert isinstance(store._reranker, (OnnxCrossEncoderReranker, CompositeReranker))
+        assert isinstance(store._reranker, OnnxCrossEncoderReranker | CompositeReranker)
 
     def test_explicit_reranker_mode_disabled(self, tmp_path) -> None:
         from nanobot.config.memory import MemoryConfig, RerankerConfig
