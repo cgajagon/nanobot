@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from nanobot.memory.db import MemoryDatabase
 from nanobot.memory.persistence.profile_io import ProfileCache, ProfileStore
@@ -59,3 +62,22 @@ class TestProfileStoreReadWrite:
         store.write_profile({"preferences": ["tea"], "stable_facts": []})
         result = store.read_profile()
         assert result["preferences"] == ["tea"]
+
+    def test_fresh_db_read_does_not_warn(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, propagate_loguru_to_caplog: None
+    ):
+        """A fresh DB with no profile row is normal init, not a parse error."""
+        store = self._make_store(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            store.read_profile()
+        assert "Failed to parse memory profile" not in caplog.text
+
+    def test_fresh_db_read_persists_default_profile(self, tmp_path: Path):
+        """First read on a fresh DB should persist the default so the row exists."""
+        store = self._make_store(tmp_path)
+        store.read_profile()
+        # Second read should hit the DB row, not return None from DB
+        row = store._db.read_profile("profile")
+        assert row is not None
+        assert isinstance(row, dict)
+        assert "preferences" in row
