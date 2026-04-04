@@ -11,6 +11,7 @@ import type {
 } from "@assistant-ui/react";
 import type { ThreadMessage } from "@assistant-ui/core";
 import { createAssistantStream } from "assistant-stream";
+import { setCurrentThreadRemoteId } from "./thread-history";
 
 /** Response shape from GET /api/threads. */
 interface ServerThreadInfo {
@@ -43,7 +44,11 @@ export const threadListAdapter: RemoteThreadListAdapter = {
   async initialize(_threadId: string) {
     const response = await fetch("/api/threads", { method: "POST" });
     const data = await response.json();
-    return { remoteId: data.threadId as string, externalId: undefined };
+    const remoteId = data.threadId as string;
+    // Eagerly set the remoteId so the body() callback in useDataStreamRuntime
+    // can inject it into the /api/chat request immediately after init resolves.
+    setCurrentThreadRemoteId(remoteId);
+    return { remoteId, externalId: undefined };
   },
 
   async generateTitle(remoteId: string, _messages: readonly ThreadMessage[]) {

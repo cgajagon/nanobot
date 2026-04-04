@@ -16,7 +16,7 @@ import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { serverHistoryAdapter, setCurrentThreadRemoteId } from "@/lib/thread-history";
+import { serverHistoryAdapter, setCurrentThreadRemoteId, getCurrentThreadRemoteId } from "@/lib/thread-history";
 import { threadListAdapter } from "@/lib/thread-list-adapter";
 
 /** MIME types that are safe to read as text. */
@@ -246,6 +246,11 @@ export default function App() {
       useDataStreamRuntime({
         api: "/api/chat",
         protocol: "ui-message-stream",
+        /** Inject the current thread's remoteId so the server routes to the correct session. */
+        body: () => {
+          const threadId = getCurrentThreadRemoteId();
+          return threadId ? { threadId } : {};
+        },
         /** Clone the response so we can read status events without disturbing the runtime. */
         onResponse: (response) => {
           if (!response.body) return;
