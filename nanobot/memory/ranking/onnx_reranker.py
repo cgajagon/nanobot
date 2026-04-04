@@ -31,6 +31,14 @@ _DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 _CACHE_DIR = Path.home() / ".cache" / "nanobot" / "models"
 _HF_BASE = "https://huggingface.co"
 
+# Use the quantized variant: the full-precision model.onnx (80MB) exceeds
+# onnxruntime's hardcoded 64MB protobuf message size limit.
+# The avx2 variant requires AVX2 CPU instructions (most x86 CPUs since ~2013).
+# On non-AVX2 hardware, InferenceSession raises an error caught by the
+# crash-barrier in _ensure_model(), and the reranker disables gracefully.
+_ONNX_MODEL_FILENAME = "model_quint8_avx2.onnx"
+_ONNX_MODEL_REMOTE_PATH = "onnx/model_quint8_avx2.onnx"
+
 
 class OnnxCrossEncoderReranker:
     """ONNX-based cross-encoder reranker using ms-marco-MiniLM-L-6-v2.
@@ -67,7 +75,7 @@ class OnnxCrossEncoderReranker:
         if self._session is not None:
             return True
 
-        model_path = self._model_dir / "model.onnx"
+        model_path = self._model_dir / _ONNX_MODEL_FILENAME
         tokenizer_path = self._model_dir / "tokenizer.json"
 
         if not model_path.exists() or not tokenizer_path.exists():
@@ -86,14 +94,14 @@ class OnnxCrossEncoderReranker:
             return False
 
     def _download_model(self) -> bool:
-        """Download ``model.onnx`` and ``tokenizer.json`` from HuggingFace Hub."""
+        """Download quantized ONNX model and ``tokenizer.json`` from HuggingFace Hub."""
         import httpx
 
         self._model_dir.mkdir(parents=True, exist_ok=True)
         repo = f"{_HF_BASE}/{_DEFAULT_MODEL}/resolve/main"
 
         files: dict[str, Path] = {
-            "onnx/model.onnx": self._model_dir / "model.onnx",
+            _ONNX_MODEL_REMOTE_PATH: self._model_dir / _ONNX_MODEL_FILENAME,
             "tokenizer.json": self._model_dir / "tokenizer.json",
         }
 
@@ -105,13 +113,32 @@ class OnnxCrossEncoderReranker:
             try:
                 with httpx.stream("GET", url, follow_redirects=True, timeout=120) as resp:
                     resp.raise_for_status()
+                    expected_size = int(resp.headers.get("content-length", 0))
+                    written = 0
                     with open(local_path, "wb") as f:
                         for chunk in resp.iter_bytes(chunk_size=8192):
                             f.write(chunk)
+                            written += len(chunk)
+                    if expected_size and written < expected_size:
+                        logger.error(
+                            "Truncated download for {}: got {} of {} bytes",
+                            url,
+                            written,
+                            expected_size,
+                        )
+                        local_path.unlink(missing_ok=True)
+                        return False
             except Exception as exc:  # crash-barrier: network download
                 logger.error("Failed to download {}: {}", url, exc)
                 local_path.unlink(missing_ok=True)
                 return False
+
+        # Clean up stale full-precision model that exceeds protobuf limit
+        stale = self._model_dir / "model.onnx"
+        if stale.exists() and stale.name != _ONNX_MODEL_FILENAME:
+            stale.unlink()
+            logger.info("Removed stale model file: {}", stale)
+
         return True
 
     # ------------------------------------------------------------------

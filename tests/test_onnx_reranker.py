@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.memory.ranking.onnx_reranker import OnnxCrossEncoderReranker
+from nanobot.memory.ranking.onnx_reranker import _ONNX_MODEL_FILENAME, OnnxCrossEncoderReranker
 
 np = pytest.importorskip("numpy", reason="numpy not installed")
 
@@ -217,7 +217,7 @@ class TestOnnxRerankerModelDownload:
             result = reranker._download_model()
 
         assert result is True
-        assert (reranker._model_dir / "model.onnx").exists()
+        assert (reranker._model_dir / _ONNX_MODEL_FILENAME).exists()
         assert (reranker._model_dir / "tokenizer.json").exists()
 
     def test_download_failure(self, tmp_path: Any) -> None:
@@ -229,7 +229,7 @@ class TestOnnxRerankerModelDownload:
 
         assert result is False
         # Partial files should be cleaned up
-        assert not (reranker._model_dir / "model.onnx").exists()
+        assert not (reranker._model_dir / _ONNX_MODEL_FILENAME).exists()
 
     def test_download_skips_existing_files(self, tmp_path: Any) -> None:
         reranker = OnnxCrossEncoderReranker()
@@ -237,7 +237,7 @@ class TestOnnxRerankerModelDownload:
         reranker._model_dir.mkdir(parents=True)
 
         # Pre-create the files
-        (reranker._model_dir / "model.onnx").write_bytes(b"existing")
+        (reranker._model_dir / _ONNX_MODEL_FILENAME).write_bytes(b"existing")
         (reranker._model_dir / "tokenizer.json").write_bytes(b"existing")
 
         with patch("httpx.stream") as mock_stream:
@@ -245,6 +245,25 @@ class TestOnnxRerankerModelDownload:
 
         assert result is True
         mock_stream.assert_not_called()
+
+    def test_truncated_download_detected_and_cleaned(self, tmp_path: Any) -> None:
+        """A download that writes fewer bytes than content-length should fail and clean up."""
+        reranker = OnnxCrossEncoderReranker()
+        reranker._model_dir = tmp_path / "test-model"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = [b"partial data"]
+        mock_response.headers = {"content-length": "999999"}
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("httpx.stream", return_value=mock_response):
+            result = reranker._download_model()
+
+        assert result is False
+        # Truncated file should be cleaned up
+        assert not (reranker._model_dir / _ONNX_MODEL_FILENAME).exists()
 
     def test_ensure_model_fails_gracefully_on_download_failure(self, tmp_path: Any) -> None:
         reranker = OnnxCrossEncoderReranker()
