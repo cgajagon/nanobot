@@ -213,9 +213,12 @@ class ProfileStore:
                         entry.setdefault("created_at", created)
                         entry["id"] = self._generate_belief_id(key, norm, entry["created_at"])
             return data
-        if data is None:
-            logger.warning("Failed to parse memory profile, resetting")
-        return {
+        if data is not None and not isinstance(data, dict):
+            logger.warning(
+                "Failed to parse memory profile (unexpected type {}), resetting",
+                type(data).__name__,
+            )
+        default: dict[str, Any] = {
             "preferences": [],
             "stable_facts": [],
             "active_projects": [],
@@ -226,6 +229,10 @@ class ProfileStore:
             "meta": {key: {} for key in PROFILE_KEYS},
             "updated_at": self._utc_now_iso(),
         }
+        if data is None:
+            # Persist default so subsequent reads find the row
+            self.write_profile(default)
+        return default
 
     def write_profile(self, profile: dict[str, Any]) -> None:
         profile["updated_at"] = self._utc_now_iso()
