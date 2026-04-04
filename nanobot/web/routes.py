@@ -18,6 +18,7 @@ from starlette.responses import StreamingResponse
 from nanobot.web.models import (
     ChatMessage,
     ChatRequest,
+    GenerateTitleResponse,
     HistoryMessage,
     HistoryResponse,
     RenameThreadRequest,
@@ -371,6 +372,62 @@ async def rename_thread(request: Request, thread_id: str, body: RenameThreadRequ
     session.metadata["title"] = body.title
     session_manager.save(session)
     return {"status": "ok"}
+
+
+@router.post("/threads/{thread_id}/generate-title")
+async def generate_title(request: Request, thread_id: str):
+    """Generate an LLM-powered title for a thread from its first exchange."""
+    session_manager = request.app.state.session_manager
+    agent_loop = request.app.state.agent_loop
+
+    session_key = _session_key(thread_id)
+    session = session_manager.get_or_create(session_key)
+
+    # Extract first user message and first assistant response
+    first_user = ""
+    first_assistant = ""
+    for m in session.messages:
+        if m.get("role") == "user" and not first_user:
+            content = m.get("content", "")
+            first_user = content if isinstance(content, str) else str(content)
+        elif m.get("role") == "assistant" and first_user and not first_assistant:
+            content = m.get("content", "")
+            first_assistant = content if isinstance(content, str) else str(content)
+            break
+
+    if not first_user:
+        return GenerateTitleResponse(title="New Chat")
+
+    # Truncate to keep the prompt compact
+    user_snippet = first_user[:300]
+    assistant_snippet = first_assistant[:300] if first_assistant else ""
+
+    prompt_parts = [
+        "Generate a short, descriptive title (5-10 words) for this conversation.",
+        "Do not use quotes or punctuation around the title. Just the title text.",
+        "",
+        f"User: {user_snippet}",
+    ]
+    if assistant_snippet:
+        prompt_parts.append(f"Assistant: {assistant_snippet}")
+
+    try:
+        response = await agent_loop.provider.chat(
+            messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
+            model=agent_loop.model,
+            temperature=0.7,
+            max_tokens=30,
+        )
+        title = (response.content or "").strip()
+        if not title or len(title) > 100:
+            title = first_user[:50] + ("..." if len(first_user) > 50 else "")
+    except Exception:  # crash-barrier: title generation is non-critical
+        logger.warning("Title generation failed for thread {}", thread_id)
+        title = first_user[:50] + ("..." if len(first_user) > 50 else "")
+
+    session.metadata["title"] = title
+    session_manager.save(session)
+    return GenerateTitleResponse(title=title)
 
 
 @router.get("/threads/{thread_id}/messages")
