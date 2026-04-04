@@ -12,7 +12,7 @@ Both had 3-layer fallback patterns that silently disabled functionality when mis
 
 ## Decision
 Replace both with lightweight mandatory alternatives:
-1. ONNX Runtime cross-encoder (~45MB) as default reranker, with CompositeReranker as config alternative
+1. ONNX Runtime cross-encoder (quantized INT8, ~22MB) as default reranker, with CompositeReranker as config alternative
 2. networkx DiGraph (~3MB) with JSON persistence for knowledge graph
 
 ## Consequences
@@ -23,6 +23,6 @@ Replace both with lightweight mandatory alternatives:
 - Simpler code — no try/except import guards
 
 ### Negative
-- ONNX model download on first use (~25MB)
+- ONNX model download on first use (~22MB quantized variant)
 - networkx graph limited to in-process access (single-process only)
 - Users with existing Neo4j graphs need one-time migration

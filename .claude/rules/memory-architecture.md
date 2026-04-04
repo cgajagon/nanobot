@@ -767,6 +767,17 @@ PK lookup + FTS5 pre-filtering. Missing indexes on `events` and `edges` tables a
 
 **Resolved:** `TokenBudgetAllocator` now reads `section_weights` from `MemoryConfig`.
 
+### Model Size
+
+**Resolved (PR#143):** `OnnxCrossEncoderReranker` now downloads the quantized model
+variant (`model_quint8_avx2.onnx`, 22MB) instead of the full-precision `model.onnx`
+(80MB) which exceeds onnxruntime's 64MB protobuf limit. Stale full-precision files
+are cleaned up on next download.
+
+**Open:** `LocalEmbedder` in `embedder.py` downloads `onnx/model.onnx` from
+`sentence-transformers/all-MiniLM-L6-v2` (86MB) via `hf_hub_download` — same >64MB
+protobuf issue, different code path. Needs the same quantized-variant treatment.
+
 ### Dead Code and Unused Parameters
 
 All items resolved. Previous items and their resolution:
