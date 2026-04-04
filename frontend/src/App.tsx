@@ -5,7 +5,7 @@ import {
   CompositeAttachmentAdapter,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
-  useRemoteThreadListRuntime,
+  unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
   useThreadListItem,
   type AttachmentAdapter,
 } from "@assistant-ui/react";

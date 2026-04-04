@@ -6,7 +6,10 @@
  * truth for thread metadata (titles, timestamps, status).
  */
 
-import type { RemoteThreadListAdapter, ThreadMessage } from "@assistant-ui/react";
+import type {
+  unstable_RemoteThreadListAdapter as RemoteThreadListAdapter,
+} from "@assistant-ui/react";
+import type { ThreadMessage } from "@assistant-ui/core";
 import { createAssistantStream } from "assistant-stream";
 
 /** Response shape from GET /api/threads. */
