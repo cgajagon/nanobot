@@ -165,6 +165,33 @@ class TestMicroExtractor:
         assert written[0].summary == "User likes Python"
 
 
+class TestMicroExtractPromptQuality:
+    """Verify the micro-extraction prompt prevents known failure modes."""
+
+    def test_prompt_instructs_skip_recalled_information(self):
+        """Prompt must tell the LLM to skip facts the assistant is recalling from memory."""
+        from nanobot.context.prompt_loader import prompts
+
+        prompt = prompts.get("micro_extract")
+        prompt_lower = prompt.lower()
+        # Must instruct to skip assistant-recalled/restated information
+        assert any(
+            phrase in prompt_lower
+            for phrase in ["recall", "restat", "already known", "from memory", "repeating"]
+        ), f"Prompt lacks anti-feedback-loop instruction:\n{prompt}"
+
+    def test_prompt_instructs_consolidation(self):
+        """Prompt must encourage consolidating related facts into fewer events."""
+        from nanobot.context.prompt_loader import prompts
+
+        prompt = prompts.get("micro_extract")
+        prompt_lower = prompt.lower()
+        assert any(
+            phrase in prompt_lower
+            for phrase in ["consolidat", "group", "combine", "single event", "1-3"]
+        ), f"Prompt lacks consolidation guidance:\n{prompt}"
+
+
 @pytest.mark.usefixtures("propagate_loguru_to_caplog")
 @pytest.mark.asyncio
 async def test_empty_parse_logs_debug(caplog: pytest.LogCaptureFixture) -> None:
