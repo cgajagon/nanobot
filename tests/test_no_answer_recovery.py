@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from nanobot.agent.agent_factory import build_agent
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.message_processor import _build_no_answer_explanation
@@ -238,6 +240,26 @@ class TestStripThink:
     def test_reasoning_block_only_returns_none(self):
         """A response containing only a reasoning block returns None."""
         assert strip_think("<think>\n1. What does the user need? Find a project.\n</think>") is None
+
+    @pytest.mark.usefixtures("propagate_loguru_to_caplog")
+    def test_think_only_warns_by_default(self, caplog: pytest.LogCaptureFixture):
+        """Default behavior warns when all content is stripped."""
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            strip_think("<think>reasoning</think>")
+        assert "strip_think removed all content" in caplog.text
+
+    @pytest.mark.usefixtures("propagate_loguru_to_caplog")
+    def test_think_only_no_warn_when_suppressed(self, caplog: pytest.LogCaptureFixture):
+        """With warn_on_empty=False, debug is logged instead of warning (tool-call responses)."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            result = strip_think("<think>reasoning about tool call</think>", warn_on_empty=False)
+        assert result is None
+        assert "strip_think removed all content" not in caplog.text
+        assert "strip_think removed think block" in caplog.text
 
 
 # ---------------------------------------------------------------------------

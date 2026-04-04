@@ -34,16 +34,29 @@ _THINK_RE = re.compile(r"<think>[\s\S]*?</think>")
 _ANALYSIS_PREFIX_RE = re.compile(r"^(assistant\s*)?analysis[^\n]*\n?", re.IGNORECASE)
 
 
-def strip_think(text: str | None) -> str | None:
-    """Remove ``<think>…</think>`` blocks that some models embed in content."""
+def strip_think(text: str | None, *, warn_on_empty: bool = True) -> str | None:
+    """Remove ``<think>…</think>`` blocks that some models embed in content.
+
+    Args:
+        text: Raw response text.
+        warn_on_empty: Log a warning when stripping removes all content.
+            Pass ``False`` for tool-call responses where think-only content
+            is expected from reasoning models.
+    """
     if not text:
         return None
     clean = _THINK_RE.sub("", text).strip()
     if not clean:
-        logger.warning(
-            "strip_think removed all content from non-empty response (first 100 chars): {}",
-            text[:100],
-        )
+        if warn_on_empty:
+            logger.warning(
+                "strip_think removed all content from non-empty response (first 100 chars): {}",
+                text[:100],
+            )
+        else:
+            logger.debug(
+                "strip_think removed think block from tool-call response (first 100 chars): {}",
+                text[:100],
+            )
         return None
     # Strip common reasoning prefixes that sometimes leak into final answers.
     while True:
@@ -153,7 +166,9 @@ class StreamingLLMCaller:
 
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
-        full_clean = strip_think(full_content) if full_content else None
+        full_clean = (
+            strip_think(full_content, warn_on_empty=not tool_calls) if full_content else None
+        )
 
         # LAN-5: some providers omit completion_tokens from streaming chunks.
         # Fall back to a character-based estimate (≈ 1 token per 4 chars) so
