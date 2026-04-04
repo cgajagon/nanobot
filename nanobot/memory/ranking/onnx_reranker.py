@@ -113,9 +113,21 @@ class OnnxCrossEncoderReranker:
             try:
                 with httpx.stream("GET", url, follow_redirects=True, timeout=120) as resp:
                     resp.raise_for_status()
+                    expected_size = int(resp.headers.get("content-length", 0))
+                    written = 0
                     with open(local_path, "wb") as f:
                         for chunk in resp.iter_bytes(chunk_size=8192):
                             f.write(chunk)
+                            written += len(chunk)
+                    if expected_size and written < expected_size:
+                        logger.error(
+                            "Truncated download for {}: got {} of {} bytes",
+                            url,
+                            written,
+                            expected_size,
+                        )
+                        local_path.unlink(missing_ok=True)
+                        return False
             except Exception as exc:  # crash-barrier: network download
                 logger.error("Failed to download {}: {}", url, exc)
                 local_path.unlink(missing_ok=True)
