@@ -5,8 +5,8 @@ import {
   CompositeAttachmentAdapter,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
-  useThreadListItem,
   useRemoteThreadListRuntime,
+  useThreadListItem,
   type AttachmentAdapter,
 } from "@assistant-ui/react";
 import { useDataStreamRuntime } from "@assistant-ui/react-data-stream";
