@@ -5,6 +5,8 @@ import {
   CompositeAttachmentAdapter,
   SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
+  useRemoteThreadListRuntime,
+  useThreadListItem,
   type AttachmentAdapter,
 } from "@assistant-ui/react";
 import { useDataStreamRuntime } from "@assistant-ui/react-data-stream";
@@ -14,7 +16,8 @@ import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { serverHistoryAdapter, ThreadHistorySync } from "@/lib/thread-history";
+import { serverHistoryAdapter, setCurrentThreadRemoteId } from "@/lib/thread-history";
+import { threadListAdapter } from "@/lib/thread-list-adapter";
 
 /** MIME types that are safe to read as text. */
 const TEXT_MIMES = new Set([
@@ -220,31 +223,49 @@ async function readStatusEvents(
   }
 }
 
+/**
+ * Syncs the current thread's remoteId to the history adapter.
+ *
+ * Reads remoteId from the thread list item state (provided by
+ * useRemoteThreadListRuntime) and writes it to the history adapter's
+ * mutable variable so load() can read it.
+ */
+function ThreadRemoteIdSync(): null {
+  const threadListItem = useThreadListItem({ optional: true });
+  setCurrentThreadRemoteId(threadListItem?.remoteId);
+  return null;
+}
+
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
 
-  const runtime = useDataStreamRuntime({
-    api: "/api/chat",
-    protocol: "ui-message-stream",
-    /** Clone the response so we can read status events without disturbing the runtime. */
-    onResponse: (response) => {
-      if (!response.body) return;
-      readStatusEvents(response.clone().body!, setAgentStatus);
-    },
-    adapters: {
-      attachments: new CompositeAttachmentAdapter([
-        new SimpleImageAttachmentAdapter(),
-        new SimpleTextAttachmentAdapter(),
-        fallbackFileAdapter,
-      ]),
-      history: serverHistoryAdapter,
-    },
+  const runtime = useRemoteThreadListRuntime({
+    runtimeHook: () =>
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      useDataStreamRuntime({
+        api: "/api/chat",
+        protocol: "ui-message-stream",
+        /** Clone the response so we can read status events without disturbing the runtime. */
+        onResponse: (response) => {
+          if (!response.body) return;
+          readStatusEvents(response.clone().body!, setAgentStatus);
+        },
+        adapters: {
+          attachments: new CompositeAttachmentAdapter([
+            new SimpleImageAttachmentAdapter(),
+            new SimpleTextAttachmentAdapter(),
+            fallbackFileAdapter,
+          ]),
+          history: serverHistoryAdapter,
+        },
+      }),
+    adapter: threadListAdapter,
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadHistorySync />
+      <ThreadRemoteIdSync />
       <div className="flex h-screen w-full bg-background">
         <div className="hidden md:block">
           <Sidebar collapsed={sidebarCollapsed} />
