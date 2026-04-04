@@ -65,6 +65,14 @@ export function setCurrentThreadRemoteId(remoteId: string | undefined): void {
 }
 
 /**
+ * Get the current thread's remoteId.
+ * Used by useDataStreamRuntime's body option to inject threadId into requests.
+ */
+export function getCurrentThreadRemoteId(): string | undefined {
+  return _currentThreadRemoteId;
+}
+
+/**
  * ThreadHistoryAdapter implementation that loads messages from the server.
  */
 export const serverHistoryAdapter: ThreadHistoryAdapter = {
