@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+
+from nanobot.memory.constants import ALIAS_REGISTRY_DDL
+from nanobot.memory.db.alias_store import AliasRegistry, AliasStore
 from nanobot.memory.write.classification import EventClassifier
 from nanobot.memory.write.coercion import EventCoercer
 from nanobot.memory.write.dedup import EventDeduplicator
@@ -12,6 +16,7 @@ def _make_dedup(
     conflict_pair_fn: object = None,
     user_aliases: frozenset[str] | None = None,
     embedder: object = None,
+    alias_registry: object = None,
 ) -> EventDeduplicator:
     classifier = EventClassifier()
     coercer = EventCoercer(classifier)
@@ -20,7 +25,21 @@ def _make_dedup(
         conflict_pair_fn=conflict_pair_fn,
         user_aliases=user_aliases,
         embedder=embedder,
+        alias_registry=alias_registry,
     )
+
+
+def _make_registry(aliases: dict[str, str] | None = None) -> AliasRegistry:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(ALIAS_REGISTRY_DDL)
+    store = AliasStore(conn)
+    if aliases:
+        for alias, canonical in aliases.items():
+            store.register(alias, canonical, confidence=1.0, source="config")
+    registry = AliasRegistry(store)
+    registry.load()
+    return registry
 
 
 class TestEventSimilarity:
@@ -266,3 +285,14 @@ class TestMergeSourceSpan:
 
     def test_invalid_incoming(self) -> None:
         assert EventDeduplicator.merge_source_span([5, 10], None) == [5, 10]
+
+
+class TestAliasRegistryInSimilarity:
+    def test_registry_resolves_aliases_in_similarity(self) -> None:
+        registry = _make_registry({"carlos": "_user_", "user": "_user_"})
+        d = _make_dedup(alias_registry=registry)
+        a = {"type": "fact", "summary": "Carlos likes Python", "entities": ["Carlos"]}
+        b = {"type": "fact", "summary": "User likes Python", "entities": ["User"]}
+        lexical, _ = d.event_similarity(a, b)
+        # With alias resolution, "carlos" and "user" both become "_user_"
+        assert lexical >= 0.9
