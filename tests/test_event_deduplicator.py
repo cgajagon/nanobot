@@ -8,12 +8,18 @@ from nanobot.memory.write.dedup import EventDeduplicator
 
 
 def _make_dedup(
-    *, conflict_pair_fn: object = None, user_aliases: frozenset[str] | None = None
+    *,
+    conflict_pair_fn: object = None,
+    user_aliases: frozenset[str] | None = None,
+    embedder: object = None,
 ) -> EventDeduplicator:
     classifier = EventClassifier()
     coercer = EventCoercer(classifier)
     return EventDeduplicator(
-        coercer=coercer, conflict_pair_fn=conflict_pair_fn, user_aliases=user_aliases
+        coercer=coercer,
+        conflict_pair_fn=conflict_pair_fn,
+        user_aliases=user_aliases,
+        embedder=embedder,
     )
 
 
@@ -192,6 +198,27 @@ class TestEntityAliasNormalization:
         candidate = {"type": "fact", "summary": "Carlos uses Obsidian for knowledge management"}
         idx, score = d.find_semantic_duplicate(candidate, existing)
         assert idx == 0
+
+
+class TestEmbeddingSemanticSimilarity:
+    def test_semantic_differs_from_lexical_with_embedder(self) -> None:
+        """With an embedder, semantic should use cosine, not equal lexical."""
+        from nanobot.memory.embedder import HashEmbedder
+
+        embedder = HashEmbedder(dims=384)
+        d = _make_dedup(embedder=embedder)
+        a = {"type": "fact", "summary": "User enjoys programming in Python"}
+        b = {"type": "fact", "summary": "Carlos likes coding with Python language"}
+        lexical, semantic = d.event_similarity(a, b)
+        assert semantic != lexical
+
+    def test_semantic_equals_lexical_without_embedder(self) -> None:
+        """Without embedder, semantic falls back to lexical."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "User likes Python"}
+        b = {"type": "fact", "summary": "User likes Python and Java"}
+        lexical, semantic = d.event_similarity(a, b)
+        assert semantic == lexical
 
 
 class TestMergeSourceSpan:

@@ -174,6 +174,7 @@ class MemoryStore:
             coercer=self._coercer,
             conflict_pair_fn=self.profile_mgr._conflict_pair,
             user_aliases=aliases if aliases else None,
+            embedder=self._embedder,
         )
         self.ingester = EventIngester(
             coercer=self._coercer,

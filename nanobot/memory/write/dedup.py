@@ -13,6 +13,7 @@ from ..constants import EPISODIC_STATUS_OPEN, EPISODIC_STATUS_RESOLVED
 from ..event import memory_type_for_item
 
 if TYPE_CHECKING:
+    from ..embedder import Embedder
     from .coercion import EventCoercer
 
 
@@ -24,10 +25,34 @@ class EventDeduplicator:
         coercer: EventCoercer,
         conflict_pair_fn: Callable[[str, str], bool] | None = None,
         user_aliases: frozenset[str] | None = None,
+        embedder: Embedder | None = None,
     ) -> None:
         self._coercer = coercer
         self._conflict_pair_fn = conflict_pair_fn
         self._user_aliases = user_aliases or frozenset()
+        self._embedder = embedder
+
+    def _sync_embed(self, texts: list[str]) -> list[list[float]] | None:
+        """Embed texts synchronously. Returns None on any failure."""
+        if not self._embedder or not self._embedder.available:
+            return None
+        import asyncio
+        import concurrent.futures
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        try:
+            if loop and loop.is_running():
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(asyncio.run, self._embedder.embed_batch(texts))
+                    return future.result(timeout=5.0)
+            else:
+                return asyncio.run(self._embedder.embed_batch(texts))
+        except Exception:  # crash-barrier: embedding failure falls back to lexical
+            return None
 
     def event_similarity(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[float, float]:
         """Compute Jaccard similarity between two events (lexical, semantic)."""
@@ -53,7 +78,18 @@ class EventDeduplicator:
         overlap = left_tokens & right_tokens
         union = left_tokens | right_tokens
         lexical = (len(overlap) / len(union)) if union else 0.0
-        semantic = lexical
+
+        # Compute embedding cosine similarity if embedder available
+        semantic = lexical  # fallback
+        if self._embedder and self._embedder.available:
+            vecs = self._sync_embed([left_text, right_text])
+            if vecs and len(vecs) == 2 and vecs[0] and vecs[1]:
+                dot = sum(a * b for a, b in zip(vecs[0], vecs[1]))
+                norm_l = sum(a * a for a in vecs[0]) ** 0.5
+                norm_r = sum(b * b for b in vecs[1]) ** 0.5
+                if norm_l > 0 and norm_r > 0:
+                    semantic = dot / (norm_l * norm_r)
+
         return lexical, semantic
 
     def find_semantic_duplicate(
