@@ -82,6 +82,9 @@ class MemoryConfig(Base):
     # Raw turn ingestion
     raw_turn_ingestion: bool = True
 
+    # Entity alias normalization for dedup
+    user_aliases: list[str] = Field(default_factory=list)
+
     # Knowledge graph
     graph_enabled: bool = False
 

@@ -21,7 +21,7 @@ from loguru import logger
 
 from nanobot.config.memory import MemoryConfig
 
-from ._text import _to_str_list, _utc_now_iso
+from ._text import _norm_text, _to_str_list, _utc_now_iso
 from .consolidation_pipeline import ConsolidationPipeline
 from .constants import PROFILE_KEYS
 from .db import MemoryDatabase
@@ -167,9 +167,12 @@ class MemoryStore:
             self.graph = KnowledgeGraph()  # disabled — all methods return empty
 
         # EventDeduplicator + EventIngester: own the full event write path.
+        aliases = frozenset(_norm_text(a) for a in self._memory_config.user_aliases)
         self._dedup = EventDeduplicator(
             coercer=self._coercer,
             conflict_pair_fn=self.profile_mgr._conflict_pair,
+            user_aliases=aliases if aliases else None,
+            embedder=self._embedder,
         )
         self.ingester = EventIngester(
             coercer=self._coercer,

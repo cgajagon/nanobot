@@ -79,3 +79,45 @@ class TestNewEventsPassThrough:
 
     def test_empty_input_returns_zero(self, store: MemoryStore) -> None:
         assert store.ingester.append_events([]) == 0
+
+
+class TestFeedbackLoopPrevention:
+    """Verify that dedup catches events from the agent recall feedback loop."""
+
+    def test_entity_name_mismatch_merged(self, store: MemoryStore) -> None:
+        """'User's project is DS10540' and 'Carlos's project is DS10540' should merge."""
+        store.ingester.append_events(
+            [MemoryEvent(summary="User's primary project is DS10540", type="fact")]
+        )
+        written = store.ingester.append_events(
+            [MemoryEvent(summary="Carlos's primary project is DS10540", type="fact")]
+        )
+        assert written == 0  # merged, not written as new
+        events = store.ingester.read_events(limit=100)
+        facts = [e for e in events if "DS10540" in e.get("summary", "")]
+        assert len(facts) == 1
+
+    def test_same_fact_different_phrasing_merged(self, store: MemoryStore) -> None:
+        """Near-identical facts with minor wording changes should merge."""
+        store.ingester.append_events(
+            [MemoryEvent(summary="User uses Obsidian for knowledge management", type="fact")]
+        )
+        written = store.ingester.append_events(
+            [MemoryEvent(summary="Carlos uses Obsidian for knowledge management", type="fact")]
+        )
+        assert written == 0
+        events = store.ingester.read_events(limit=100)
+        obsidian_facts = [e for e in events if "obsidian" in e.get("summary", "").lower()]
+        assert len(obsidian_facts) == 1
+
+    def test_genuinely_different_facts_not_merged(self, store: MemoryStore) -> None:
+        """Different facts about the same entity should not be merged."""
+        store.ingester.append_events(
+            [MemoryEvent(summary="Carlos works on project DS10540", type="fact")]
+        )
+        written = store.ingester.append_events(
+            [MemoryEvent(summary="Carlos speaks English and Spanish", type="fact")]
+        )
+        assert written == 1  # genuinely new fact
+        events = store.ingester.read_events(limit=100)
+        assert len(events) == 2

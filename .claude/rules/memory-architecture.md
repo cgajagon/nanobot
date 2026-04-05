@@ -173,6 +173,22 @@ Exposing this complexity would create import spaghetti and make refactoring impo
 `MemoryStore`. Import rules in `scripts/check_imports.py` block external packages
 from importing `memory.write`, `memory.read`, etc.
 
+### Pattern 7: Extraction Is Stateless, Reconciliation Is Write-Time
+
+The micro-extractor receives conversation content only. It does NOT receive existing
+events, profile beliefs, or prior extractions. All comparison, dedup, supersession, and
+merge logic lives in `EventIngester.append_events()`.
+
+**Rationale:** (1) Empirical evidence shows context pollution degrades extraction
+accuracy (Context Rot, Chroma 2025; Lost in the Middle, Liu et al. 2024). (2) Extraction
+and reconciliation change for different reasons (SRP). (3) Stateless extraction is
+independently testable. (4) Production memory systems (mem0, Graphiti, cognee, NELL)
+universally separate these concerns.
+
+**Enforcement:** `MicroExtractor` has no access to `MemoryRetriever`, `ProfileStore`,
+`ContextAssembler`, or any read-side component. Its only dependencies are `LLMProvider`
+(generic), `EventIngester` (write-side), and `Embedder` (protocol).
+
 ---
 
 <a id="storage-layer"></a>
@@ -777,6 +793,20 @@ added to prevent recurrence. Stale files are cleaned up on next download.
 
 **Not affected:** `LocalEmbedder` uses `hf_hub_download` which has built-in integrity
 checks — the 86MB `all-MiniLM-L6-v2` model loads correctly on all onnxruntime versions.
+
+### Dedup Pipeline
+
+**Resolved:** Same-type Jaccard threshold lowered from 0.84 to 0.70 to catch
+near-duplicates with entity name mismatches (e.g., "User's project" vs "Carlos's
+project", Jaccard = 0.714).
+
+**Resolved:** Entity name normalization via `user_aliases` config field. Configurable
+aliases are normalized to a canonical token before Jaccard computation, ensuring events
+referencing the same user by different names are detected as duplicates.
+
+**Resolved:** Semantic similarity stub (`semantic = lexical`) replaced with real
+embedding cosine similarity via the `Embedder` protocol. Falls back to lexical when
+embedder is unavailable.
 
 ### Dead Code and Unused Parameters
 
