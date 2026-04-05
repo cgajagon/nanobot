@@ -7,23 +7,29 @@ from nanobot.memory.write.coercion import EventCoercer
 from nanobot.memory.write.dedup import EventDeduplicator
 
 
-def _make_dedup(*, conflict_pair_fn: object = None) -> EventDeduplicator:
+def _make_dedup(
+    *, conflict_pair_fn: object = None, user_aliases: frozenset[str] | None = None
+) -> EventDeduplicator:
     classifier = EventClassifier()
     coercer = EventCoercer(classifier)
-    return EventDeduplicator(coercer=coercer, conflict_pair_fn=conflict_pair_fn)
+    return EventDeduplicator(
+        coercer=coercer, conflict_pair_fn=conflict_pair_fn, user_aliases=user_aliases
+    )
 
 
 class TestEventSimilarity:
     def test_identical_events(self) -> None:
+        d = _make_dedup()
         a = {"type": "fact", "summary": "User likes Python", "entities": ["Python"]}
-        lexical, semantic = EventDeduplicator.event_similarity(a, a)
+        lexical, semantic = d.event_similarity(a, a)
         assert lexical == 1.0
         assert semantic == 1.0
 
     def test_different_events(self) -> None:
+        d = _make_dedup()
         a = {"type": "fact", "summary": "User likes Python", "entities": ["Python"]}
         b = {"type": "fact", "summary": "Weather is sunny in Tokyo", "entities": ["Tokyo"]}
-        lexical, _ = EventDeduplicator.event_similarity(a, b)
+        lexical, _ = d.event_similarity(a, b)
         assert lexical < 0.3
 
 
@@ -160,6 +166,32 @@ class TestMergeEvents:
         }
         merged = d.merge_events(base, incoming, similarity=0.85)
         assert 0.72 < merged["confidence"] < 0.74
+
+
+class TestEntityAliasNormalization:
+    def test_user_alias_normalized_in_similarity(self) -> None:
+        """'User likes Python' vs 'Carlos likes Python' should have high similarity with aliases."""
+        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        a = {"type": "fact", "summary": "User likes Python"}
+        b = {"type": "fact", "summary": "Carlos likes Python"}
+        lexical, _ = d.event_similarity(a, b)
+        assert lexical >= 0.84  # after normalization, near-identical
+
+    def test_no_aliases_lower_similarity(self) -> None:
+        """Without aliases, 'User likes Python' vs 'Carlos likes Python' has lower similarity."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "User likes Python"}
+        b = {"type": "fact", "summary": "Carlos likes Python"}
+        lexical, _ = d.event_similarity(a, b)
+        assert lexical < 0.84  # entity name difference lowers similarity
+
+    def test_alias_normalization_enables_dedup(self) -> None:
+        """With aliases, entity name mismatch events are detected as duplicates."""
+        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        existing = [{"type": "fact", "summary": "User uses Obsidian for knowledge management"}]
+        candidate = {"type": "fact", "summary": "Carlos uses Obsidian for knowledge management"}
+        idx, score = d.find_semantic_duplicate(candidate, existing)
+        assert idx == 0
 
 
 class TestMergeSourceSpan:

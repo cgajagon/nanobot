@@ -23,12 +23,13 @@ class EventDeduplicator:
         self,
         coercer: EventCoercer,
         conflict_pair_fn: Callable[[str, str], bool] | None = None,
+        user_aliases: frozenset[str] | None = None,
     ) -> None:
         self._coercer = coercer
         self._conflict_pair_fn = conflict_pair_fn
+        self._user_aliases = user_aliases or frozenset()
 
-    @staticmethod
-    def event_similarity(left: dict[str, Any], right: dict[str, Any]) -> tuple[float, float]:
+    def event_similarity(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[float, float]:
         """Compute Jaccard similarity between two events (lexical, semantic)."""
 
         def _event_text(event: dict[str, Any]) -> str:
@@ -42,6 +43,13 @@ class EventDeduplicator:
 
         left_tokens = _tokenize(left_text)
         right_tokens = _tokenize(right_text)
+
+        # Normalize user aliases to a canonical token
+        if self._user_aliases:
+            canonical = "_user_"
+            left_tokens = {canonical if t in self._user_aliases else t for t in left_tokens}
+            right_tokens = {canonical if t in self._user_aliases else t for t in right_tokens}
+
         overlap = left_tokens & right_tokens
         union = left_tokens | right_tokens
         lexical = (len(overlap) / len(union)) if union else 0.0
