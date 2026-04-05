@@ -1,4 +1,4 @@
-.PHONY: install install-all test test-verbose test-cov test-integration lint format typecheck check ci pre-push import-check structure-check prompt-check phase-todo-check doc-check memory-eval live-eval clean worktree-clean pre-commit-install
+.PHONY: install install-all test test-verbose test-cov test-integration test-e2e test-e2e-headed lint format typecheck check ci pre-push import-check structure-check prompt-check phase-todo-check doc-check memory-eval live-eval clean worktree-clean pre-commit-install
 
 PYTHON ?= python
 
@@ -22,6 +22,12 @@ test-cov:
 
 test-integration:  ## Integration tests (before push, LLM tests need API key)
 	$(PYTHON) -m pytest tests/integration/ -v --tb=short -x
+
+test-e2e:  ## Run Playwright E2E tests (requires gateway + Vite dev server + LLM API key)
+	cd frontend && NANOBOT_E2E_LLM=1 npx playwright test
+
+test-e2e-headed:  ## Run E2E tests with visible browser
+	cd frontend && NANOBOT_E2E_LLM=1 npx playwright test --headed
 
 lint:
 	ruff check nanobot/ tests/
