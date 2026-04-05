@@ -18,6 +18,7 @@ import sqlite_vec  # type: ignore[import-untyped]
 from .._text import _utc_now_iso
 
 if TYPE_CHECKING:
+    from .alias_store import AliasStore
     from .event_store import EventStore
     from .graph_store import GraphStore
 from ..constants import ALIAS_REGISTRY_DDL, STRATEGIES_DDL
@@ -74,6 +75,7 @@ class MemoryDatabase:
         self._init_schema()
 
         # Lazy references set by Tasks 2-3 (EventStore, GraphStore).
+        self._alias_store: AliasStore | None = None
         self._event_store: EventStore | None = None
         self._graph_store: GraphStore | None = None
 
@@ -184,6 +186,15 @@ class MemoryDatabase:
 
             self._graph_store = GraphStore(self._conn)
         return self._graph_store
+
+    @property
+    def alias_store(self) -> AliasStore:
+        """Focused repository for entity alias CRUD."""
+        if self._alias_store is None:
+            from .alias_store import AliasStore
+
+            self._alias_store = AliasStore(self._conn)
+        return self._alias_store
 
     # ------------------------------------------------------------------
     # Profile CRUD
