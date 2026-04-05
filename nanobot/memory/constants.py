@@ -67,6 +67,18 @@ CREATE INDEX IF NOT EXISTS idx_strategies_domain ON strategies(domain);
 CREATE INDEX IF NOT EXISTS idx_strategies_task_type ON strategies(task_type);
 """
 
+# Schema DDL for the alias registry table — single source of truth.
+# Used by MemoryDatabase._init_schema() and imported by test fixtures.
+ALIAS_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS alias_registry (
+    alias      TEXT PRIMARY KEY,
+    canonical  TEXT NOT NULL,
+    confidence REAL DEFAULT 0.8,
+    source     TEXT DEFAULT 'config'
+);
+CREATE INDEX IF NOT EXISTS idx_alias_canonical ON alias_registry(canonical);
+"""
+
 _SAVE_EVENTS_TOOL: list[dict[str, Any]] = [
     {
         "type": "function",

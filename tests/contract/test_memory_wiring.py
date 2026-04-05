@@ -81,6 +81,15 @@ def test_maintenance_reindex_removed(tmp_path):
     assert not hasattr(store.maintenance, "reindex_from_structured_memory")
 
 
+def test_alias_registry_table_exists(tmp_path: Path) -> None:
+    """alias_registry table is created by MemoryDatabase schema init."""
+    store = _make_store(tmp_path)
+    cursor = store.db.connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='alias_registry'"
+    )
+    assert cursor.fetchone() is not None
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod

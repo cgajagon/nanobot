@@ -20,7 +20,7 @@ from .._text import _utc_now_iso
 if TYPE_CHECKING:
     from .event_store import EventStore
     from .graph_store import GraphStore
-from ..constants import STRATEGIES_DDL
+from ..constants import ALIAS_REGISTRY_DDL, STRATEGIES_DDL
 
 __all__ = ["MemoryDatabase"]
 
@@ -143,6 +143,8 @@ class MemoryDatabase:
             );
 
             {STRATEGIES_DDL}
+
+            {ALIAS_REGISTRY_DDL}
 
             {_FTS_TRIGGERS}
 

@@ -95,3 +95,11 @@ class TestEventTypeConsistency:
 
         literal_values = set(get_args(Stability))
         assert literal_values == MEMORY_STABILITY
+
+
+class TestAliasRegistryDDL:
+    def test_alias_registry_ddl_importable(self) -> None:
+        from nanobot.memory.constants import ALIAS_REGISTRY_DDL
+
+        assert "CREATE TABLE" in ALIAS_REGISTRY_DDL
+        assert "alias_registry" in ALIAS_REGISTRY_DDL
