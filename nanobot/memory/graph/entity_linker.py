@@ -31,7 +31,7 @@ _ALIAS_MAP: dict[str, str] = {
     "py": "python",
     "python3": "python",
     "gh": "github",
-    "gh actions": "github actions",
+    "gh_actions": "github actions",
     # Environments
     "prod": "production",
     "dev": "development",
