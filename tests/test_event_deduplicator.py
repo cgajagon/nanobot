@@ -14,7 +14,6 @@ from nanobot.memory.write.dedup import EventDeduplicator
 def _make_dedup(
     *,
     conflict_pair_fn: object = None,
-    user_aliases: frozenset[str] | None = None,
     embedder: object = None,
     alias_registry: object = None,
 ) -> EventDeduplicator:
@@ -23,7 +22,6 @@ def _make_dedup(
     return EventDeduplicator(
         coercer=coercer,
         conflict_pair_fn=conflict_pair_fn,
-        user_aliases=user_aliases,
         embedder=embedder,
         alias_registry=alias_registry,
     )
@@ -196,7 +194,8 @@ class TestMergeEvents:
 class TestEntityAliasNormalization:
     def test_user_alias_normalized_in_similarity(self) -> None:
         """'User likes Python' vs 'Carlos likes Python' should have high similarity with aliases."""
-        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        registry = _make_registry({"user": "_user_", "carlos": "_user_"})
+        d = _make_dedup(alias_registry=registry)
         a = {"type": "fact", "summary": "User likes Python"}
         b = {"type": "fact", "summary": "Carlos likes Python"}
         lexical, _ = d.event_similarity(a, b)
@@ -212,7 +211,8 @@ class TestEntityAliasNormalization:
 
     def test_alias_normalization_enables_dedup(self) -> None:
         """With aliases, entity name mismatch events are detected as duplicates."""
-        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        registry = _make_registry({"user": "_user_", "carlos": "_user_"})
+        d = _make_dedup(alias_registry=registry)
         existing = [{"type": "fact", "summary": "User uses Obsidian for knowledge management"}]
         candidate = {"type": "fact", "summary": "Carlos uses Obsidian for knowledge management"}
         idx, score = d.find_semantic_duplicate(candidate, existing)

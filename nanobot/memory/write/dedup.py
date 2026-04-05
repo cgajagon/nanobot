@@ -33,13 +33,11 @@ class EventDeduplicator:
         self,
         coercer: EventCoercer,
         conflict_pair_fn: Callable[[str, str], bool] | None = None,
-        user_aliases: frozenset[str] | None = None,
         embedder: Embedder | None = None,
         alias_registry: AliasRegistry | None = None,
     ) -> None:
         self._coercer = coercer
         self._conflict_pair_fn = conflict_pair_fn
-        self._user_aliases = user_aliases or frozenset()
         self._embedder = embedder
         self._alias_registry = alias_registry
 
@@ -81,14 +79,10 @@ class EventDeduplicator:
         left_tokens = _tokenize(left_text)
         right_tokens = _tokenize(right_text)
 
-        # Normalize user aliases to canonical tokens
+        # Normalize aliases to canonical tokens via registry
         if self._alias_registry:
             left_tokens = {self._alias_registry.resolve(t) for t in left_tokens}
             right_tokens = {self._alias_registry.resolve(t) for t in right_tokens}
-        elif self._user_aliases:
-            canonical = "_user_"
-            left_tokens = {canonical if t in self._user_aliases else t for t in left_tokens}
-            right_tokens = {canonical if t in self._user_aliases else t for t in right_tokens}
 
         overlap = left_tokens & right_tokens
         union = left_tokens | right_tokens

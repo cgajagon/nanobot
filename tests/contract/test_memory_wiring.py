@@ -90,6 +90,15 @@ def test_alias_registry_table_exists(tmp_path: Path) -> None:
     assert cursor.fetchone() is not None
 
 
+def test_alias_store_property(tmp_path: Path) -> None:
+    """MemoryDatabase exposes alias_store lazy property."""
+    store = _make_store(tmp_path)
+    alias_store = store.db.alias_store
+    assert alias_store is not None
+    # Should be the same instance on second access
+    assert store.db.alias_store is alias_store
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod
