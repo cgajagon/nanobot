@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from nanobot.memory._text import normalize_entity_name
+
 # ---------------------------------------------------------------------------
 # Entity types — rich ontology with software-infra + agent-native subtypes
 # ---------------------------------------------------------------------------
@@ -175,7 +177,7 @@ class Entity:
     @property
     def canonical_name(self) -> str:
         """Normalised lowercase name used as the graph key."""
-        return self.name.strip().lower().replace(" ", "_")
+        return normalize_entity_name(self.name)
 
     @property
     def all_types(self) -> list[EntityType]:

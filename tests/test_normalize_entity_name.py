@@ -47,3 +47,25 @@ class TestNormalizeEntityName:
     )
     def test_normalization(self, raw: str, expected: str) -> None:
         assert normalize_entity_name(raw) == expected
+
+
+class TestEntityCanonicalName:
+    """Entity.canonical_name uses normalize_entity_name."""
+
+    def test_possessive_stripped(self) -> None:
+        from nanobot.memory.graph.ontology_types import Entity
+
+        e = Entity(name="User's")
+        assert e.canonical_name == "user"
+
+    def test_title_stripped(self) -> None:
+        from nanobot.memory.graph.ontology_types import Entity
+
+        e = Entity(name="Dr. Smith")
+        assert e.canonical_name == "smith"
+
+    def test_basic(self) -> None:
+        from nanobot.memory.graph.ontology_types import Entity
+
+        e = Entity(name="Carlos Gajardo")
+        assert e.canonical_name == "carlos_gajardo"

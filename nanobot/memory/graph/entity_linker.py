@@ -10,6 +10,8 @@ without touching scoring logic.
 
 from __future__ import annotations
 
+from nanobot.memory._text import normalize_entity_name
+
 # ---------------------------------------------------------------------------
 # Alias map — shorthand → canonical name
 # ---------------------------------------------------------------------------
@@ -43,4 +45,5 @@ def resolve_alias(name: str) -> str:
 
     Returns the original name (stripped) if no alias is registered.
     """
-    return _ALIAS_MAP.get(name.strip().lower(), name.strip())
+    key = normalize_entity_name(name)
+    return _ALIAS_MAP.get(key, name.strip())
