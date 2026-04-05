@@ -76,6 +76,14 @@ class TestFindSemanticDuplicate:
         idx, _ = d.find_semantic_duplicate(candidate, existing)
         assert idx is None
 
+    def test_boundary_just_below_threshold_not_merged(self) -> None:
+        """Events with Jaccard just below 0.70 should NOT merge (0.556 here)."""
+        d = _make_dedup()
+        existing = [{"type": "fact", "summary": "User prefers Python for backend development"}]
+        candidate = {"type": "fact", "summary": "Carlos prefers Python for backend services"}
+        idx, _ = d.find_semantic_duplicate(candidate, existing)
+        assert idx is None
+
 
 class TestFindSemanticSupersession:
     def test_negation_detected(self) -> None:
