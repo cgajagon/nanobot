@@ -200,6 +200,42 @@ class TestEntityAliasNormalization:
         assert idx == 0
 
 
+class TestEntityNormalizationInSimilarity:
+    def test_possessive_entities_match_in_similarity(self) -> None:
+        """'User's project' and 'User project' should have high entity overlap."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "Working on the project", "entities": ["User's"]}
+        b = {"type": "fact", "summary": "Working on the project", "entities": ["User"]}
+        # After normalization, both entity tokens become "user"
+        lexical, _ = d.event_similarity(a, b)
+        assert lexical >= 0.9
+
+    def test_possessive_entities_match_in_dedup(self) -> None:
+        """Entity overlap in find_semantic_duplicate should normalize possessives.
+
+        Summaries differ enough that lexical similarity alone (~0.27) won't trigger
+        any merge threshold. Entity overlap is the deciding factor:
+        - With _norm_text: "user's" != "user" -> overlap=0 -> no merge
+        - With normalize_entity_name: both -> "user" -> overlap=1.0 -> merges
+          (entity_overlap >= 0.30 AND lexical >= 0.25 AND same type)
+        """
+        d = _make_dedup()
+        existing = [
+            {
+                "type": "fact",
+                "summary": "Prefers dark mode for coding",
+                "entities": ["User's"],
+            }
+        ]
+        candidate = {
+            "type": "fact",
+            "summary": "Likes dark theme when programming",
+            "entities": ["User"],
+        }
+        idx, score = d.find_semantic_duplicate(candidate, existing)
+        assert idx == 0
+
+
 class TestEmbeddingSemanticSimilarity:
     def test_semantic_differs_from_lexical_with_embedder(self) -> None:
         """With an embedder, semantic should use cosine, not equal lexical."""
