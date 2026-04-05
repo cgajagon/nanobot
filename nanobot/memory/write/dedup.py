@@ -33,11 +33,16 @@ class EventDeduplicator:
         self._embedder = embedder
 
     def _sync_embed(self, texts: list[str]) -> list[list[float]] | None:
-        """Embed texts synchronously. Returns None on any failure."""
+        """Embed texts synchronously. Returns None on any failure.
+
+        Handles both cases: called from within a running event loop
+        (micro-extraction, consolidation) and from outside one (tests).
+        Uses ``run_coroutine_threadsafe`` when a loop is running so the
+        embedder's async client stays on its original loop.
+        """
         if not self._embedder or not self._embedder.available:
             return None
         import asyncio
-        import concurrent.futures
 
         try:
             loop = asyncio.get_running_loop()
@@ -46,9 +51,8 @@ class EventDeduplicator:
 
         try:
             if loop and loop.is_running():
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, self._embedder.embed_batch(texts))
-                    return future.result(timeout=5.0)
+                future = asyncio.run_coroutine_threadsafe(self._embedder.embed_batch(texts), loop)
+                return future.result(timeout=5.0)
             else:
                 return asyncio.run(self._embedder.embed_batch(texts))
         except Exception:  # crash-barrier: embedding failure falls back to lexical
