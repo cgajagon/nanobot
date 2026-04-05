@@ -60,6 +60,22 @@ class TestFindSemanticDuplicate:
         idx, _ = d.find_semantic_duplicate(candidate, existing)
         assert idx is None
 
+    def test_entity_name_mismatch_same_type_matches(self) -> None:
+        """'User's project is DS10540' vs 'Carlos's project is DS10540' should merge."""
+        d = _make_dedup()
+        existing = [{"type": "fact", "summary": "User's primary project is DS10540"}]
+        candidate = {"type": "fact", "summary": "Carlos's primary project is DS10540"}
+        idx, score = d.find_semantic_duplicate(candidate, existing)
+        assert idx == 0
+
+    def test_different_facts_same_type_not_merged(self) -> None:
+        """Similar structure but different content should not merge."""
+        d = _make_dedup()
+        existing = [{"type": "fact", "summary": "User prefers Python for data science"}]
+        candidate = {"type": "fact", "summary": "User prefers Java for web development"}
+        idx, _ = d.find_semantic_duplicate(candidate, existing)
+        assert idx is None
+
 
 class TestFindSemanticSupersession:
     def test_negation_detected(self) -> None:

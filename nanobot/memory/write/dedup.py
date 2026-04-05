@@ -81,6 +81,7 @@ class EventDeduplicator:
                     and lexical >= 0.25
                     and candidate_type == str(existing.get("type", ""))
                 )
+                or (lexical >= 0.70 and candidate_type == str(existing.get("type", "")))
             )
             if not is_duplicate:
                 continue
