@@ -1,3 +1,7 @@
+# Use bash explicitly — required for cross-platform compatibility (Linux + Windows/Git Bash).
+# Without this, Make uses cmd.exe on Windows, breaking VAR=1, find, rm -rf, ||, etc.
+SHELL := bash
+
 .PHONY: install install-all test test-verbose test-cov test-integration test-e2e test-e2e-headed lint format typecheck check ci pre-push import-check structure-check prompt-check phase-todo-check doc-check memory-eval live-eval clean worktree-clean pre-commit-install
 
 PYTHON ?= python
