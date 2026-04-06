@@ -14,6 +14,7 @@ previously spread across six methods on ``MemoryStore``.  The pipeline:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -247,7 +248,7 @@ class ConsolidationPipeline:
 
         # -- Apply results (same as two-call path) --
         embeddings = await self._compute_embeddings(events)
-        events_written = self._ingester.append_events(events, embeddings=embeddings)
+        events_written = await asyncio.to_thread(self._ingester.append_events, events, embeddings)
         await self._ingester.ingest_graph_triples(events)
 
         event_ids = [e.id for e in events if e.id]
