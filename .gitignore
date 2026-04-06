@@ -44,3 +44,5 @@ coverage.json
 .worktrees/
 .serena/
 .mcp.json
+.playwright-mcp/
+.pre-commit/
