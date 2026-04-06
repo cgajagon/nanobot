@@ -31,7 +31,7 @@ class GraphAugmenter:
         self._graph = graph
         self._extractor = extractor
         self._read_events_fn = read_events_fn
-        self._graph_cache: dict[frozenset[str], set[str]] = {}
+        self._graph_cache: dict[frozenset[str], dict[str, str]] = {}
 
     def read_events(self, **kwargs: Any) -> list[dict[str, Any]]:
         """Public accessor for the read-events callable."""
@@ -49,14 +49,19 @@ class GraphAugmenter:
         self,
         query: str,
         events: list[dict[str, Any]],
-    ) -> set[str]:
-        """Collect entity names related to query entities via graph and event triples."""
+    ) -> dict[str, str]:
+        """Collect entity names related to query entities via graph and event triples.
+
+        Returns a dict mapping entity name (lowercase) to its ``last_seen``
+        timestamp from the knowledge graph.  Entities without a graph row
+        get an empty string.
+        """
         if self._graph is None or not self._graph.enabled:
-            return set()
+            return {}
 
         query_entities = {e.lower() for e in extract_entities(query)}
         if not query_entities:
-            return set()
+            return {}
 
         cache_key = frozenset(query_entities)
         if cache_key in self._graph_cache:
@@ -77,7 +82,14 @@ class GraphAugmenter:
             query_entities,
             depth=2,
         )
-        result = graph_entity_names | graph_related
+        all_names = graph_entity_names | graph_related
+
+        # Look up last_seen for each entity from the graph
+        result: dict[str, str] = {}
+        for name in all_names:
+            row = self._graph.get_entity_row(name)
+            result[name] = str(row.get("last_seen", "")) if row else ""
+
         self._graph_cache[cache_key] = result
         return result
 

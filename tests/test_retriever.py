@@ -26,6 +26,7 @@ def _make_retriever(
     graph.enabled = graph_enabled
     graph.get_related_entity_names_sync = MagicMock(return_value=set())
     graph.get_triples_for_entities_sync = MagicMock(return_value=[])
+    graph.get_entity_row = MagicMock(return_value={"last_seen": ""})
 
     planner = MagicMock()
     plan = MagicMock()
@@ -235,7 +236,7 @@ class TestRetrieveAppliesTypeBoost:
             items,
             plan,
             profile_data=profile_data,
-            graph_entities=set(),
+            graph_entities={},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=True,
@@ -718,6 +719,7 @@ class TestGraphEntityCache:
         graph = MagicMock()
         graph.enabled = True
         graph.get_related_entity_names_sync.return_value = {"alice", "bob"}
+        graph.get_entity_row.return_value = {"last_seen": ""}
         planner = MagicMock()
         reranker = MagicMock()
         reranker.rerank.side_effect = lambda items, **kw: items

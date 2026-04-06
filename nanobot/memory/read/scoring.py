@@ -48,6 +48,8 @@ _STABILITY_HALF_LIFE: dict[str, float] = {
     "low": 14.0,
 }
 
+_GRAPH_ENTITY_HALF_LIFE_DAYS: float = 90.0
+
 
 def _contains_norm_phrase(text: str, phrase_norm: str) -> bool:
     if not phrase_norm:
@@ -256,7 +258,7 @@ class RetrievalScorer:
         items: list[dict[str, Any]],
         plan: RetrievalPlan,
         profile_data: dict[str, Any],
-        graph_entities: set[str],
+        graph_entities: dict[str, str],
         *,
         use_recency: bool,
         router_enabled: bool,
@@ -270,6 +272,7 @@ class RetrievalScorer:
         resolved_keep_new_new = profile_data["resolved_keep_new_new"]
 
         graph_boost_value = 0.15 if graph_entities else 0.0
+        graph_entity_keys = set(graph_entities) if graph_entities else set()
 
         scored: list[dict[str, Any]] = []
         for item in items:
@@ -370,14 +373,25 @@ class RetrievalScorer:
             elif reflection_penalty:
                 adjustment_reasons.append("reflection_default_penalty")
 
-            # -- Graph entity boost -------------------------------------------
+            # -- Graph entity boost (recency-modulated) -----------------------
             g_boost = 0.0
             if graph_entities:
                 item_entities = {
                     e.lower() for e in (item.get("entities") or []) if isinstance(e, str)
                 }
-                if item_entities & graph_entities:
-                    g_boost = graph_boost_value
+                matched = item_entities & graph_entity_keys
+                if matched:
+                    best_recency = 0.0
+                    for ent in matched:
+                        last_seen = graph_entities.get(ent, "")
+                        if last_seen:
+                            ent_recency = RetrievalPlanner.recency_signal(
+                                last_seen, half_life_days=_GRAPH_ENTITY_HALF_LIFE_DAYS
+                            )
+                            best_recency = max(best_recency, ent_recency)
+                        else:
+                            best_recency = max(best_recency, 0.5)
+                    g_boost = graph_boost_value * max(best_recency, 0.2)
 
             recency_weight = 0.15
             intent_bonus = (
@@ -390,6 +404,7 @@ class RetrievalScorer:
             reason["intent"] = intent
             reason["type_boost"] = round(type_boost, 4)
             reason["stability_boost"] = round(stability_boost, 4)
+            reason["graph_boost"] = round(g_boost, 4)
             if reflection_penalty:
                 reason["reflection_penalty"] = round(reflection_penalty, 4)
 

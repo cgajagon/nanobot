@@ -20,6 +20,7 @@ def _make_augmenter(
     graph.enabled = graph_enabled
     graph.get_related_entity_names_sync = MagicMock(return_value=set())
     graph.get_triples_for_entities_sync = MagicMock(return_value=[])
+    graph.get_entity_row = MagicMock(return_value={"last_seen": ""})
 
     extractor = MagicMock()
     extractor._extract_entities = MagicMock(return_value=[])
@@ -37,13 +38,13 @@ class TestCollectGraphEntityNames:
     def test_returns_empty_when_graph_disabled(self) -> None:
         aug = _make_augmenter(graph_enabled=False)
         result = aug.collect_graph_entity_names("query", [])
-        assert result == set()
+        assert result == {}
 
     def test_returns_empty_when_no_query_entities(self) -> None:
         aug = _make_augmenter()
         with patch(_EXTRACT_ENTITIES_PATH, return_value=[]):
             result = aug.collect_graph_entity_names("query", [])
-        assert result == set()
+        assert result == {}
 
     def test_collects_from_event_triples(self) -> None:
         aug = _make_augmenter()

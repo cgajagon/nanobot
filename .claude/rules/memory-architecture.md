@@ -474,7 +474,7 @@ Query text
 │         + 0.15 × recency (stability-aware half-life) │
 │         + stability_boost (+0.03 / +0.01 / -0.02)   │
 │         + reflection_penalty (-0.06)                 │
-│         + graph_entity_boost (+0.15)                 │
+│         + graph_entity_boost (+0.03..0.15, recency)   │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐

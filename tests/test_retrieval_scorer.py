@@ -164,7 +164,7 @@ class TestScoreItems:
             items,
             plan,
             profile_data,
-            set(),
+            {},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=True,
@@ -196,7 +196,7 @@ class TestScoreItems:
             items,
             plan,
             profile_data,
-            {"alice"},
+            {"alice": ""},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=True,
@@ -266,7 +266,7 @@ class TestStabilityAwareDecay:
             items_high,
             plan,
             profile_data,
-            set(),
+            {},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=False,
@@ -275,7 +275,7 @@ class TestStabilityAwareDecay:
             items_low,
             plan,
             profile_data,
-            set(),
+            {},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=False,
@@ -326,7 +326,7 @@ class TestStabilityAwareDecay:
             items_confirmed,
             plan,
             profile_data,
-            set(),
+            {},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=False,
@@ -335,7 +335,7 @@ class TestStabilityAwareDecay:
             items_stale,
             plan,
             profile_data,
-            set(),
+            {},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=False,
@@ -392,7 +392,7 @@ class TestRecencyBoostMagnitude:
             items,
             plan,
             profile_data,
-            graph_entities=set(),
+            graph_entities={},
             use_recency=True,
             router_enabled=True,
             type_separation_enabled=True,
@@ -401,3 +401,125 @@ class TestRecencyBoostMagnitude:
         gap = scores["recent"] - scores["old"]
         # With coefficient 0.15 and recency ~1.0 vs ~0.0, gap should be ~0.15
         assert gap > 0.10, f"Recency gap {gap:.3f} too small — coefficient may be too low"
+
+
+class TestGraphRecencyBoost:
+    """Graph entity boost is modulated by entity last_seen recency."""
+
+    def test_recent_entity_gets_higher_boost(self) -> None:
+        """Events mentioning recently-seen graph entities should score higher."""
+        from datetime import datetime, timedelta, timezone
+
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        recent_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        old_ts = "2024-01-01T00:00:00Z"
+        item_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+        item_template = {
+            "id": "r1",
+            "type": "fact",
+            "summary": "Uses Python",
+            "memory_type": "semantic",
+            "timestamp": item_ts,
+            "score": 0.5,
+            "stability": "medium",
+            "entities": ["python"],
+        }
+        scored_recent = scorer.score_items(
+            [dict(item_template)],
+            plan,
+            profile_data,
+            {"python": recent_ts},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        scored_old = scorer.score_items(
+            [dict(item_template)],
+            plan,
+            profile_data,
+            {"python": old_ts},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        assert scored_recent[0]["score"] > scored_old[0]["score"]
+
+    def test_empty_graph_entities_no_boost(self) -> None:
+        """No graph entities means no boost."""
+        from datetime import datetime, timezone
+
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        items = [
+            {
+                "id": "1",
+                "type": "fact",
+                "summary": "Test",
+                "memory_type": "semantic",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "score": 0.5,
+                "stability": "medium",
+                "entities": ["python"],
+            }
+        ]
+        scored = scorer.score_items(
+            items,
+            plan,
+            profile_data,
+            {},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        reason = scored[0].get("retrieval_reason", {})
+        assert reason.get("graph_boost", 0.0) == 0.0
+
+    def test_no_timestamp_entity_gets_moderate_boost(self) -> None:
+        """Entity with empty last_seen gets moderate boost (0.5 recency)."""
+        from datetime import datetime, timedelta, timezone
+
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        item_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        items = [
+            {
+                "id": "1",
+                "type": "fact",
+                "summary": "Test",
+                "memory_type": "semantic",
+                "timestamp": item_ts,
+                "score": 0.5,
+                "stability": "medium",
+                "entities": ["python"],
+            }
+        ]
+        scored = scorer.score_items(
+            items,
+            plan,
+            profile_data,
+            {"python": ""},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        reason = scored[0].get("retrieval_reason", {})
+        g_boost = reason.get("graph_boost", 0.0)
+        # 0.15 * max(0.5, 0.2) = 0.075
+        assert 0.07 <= g_boost <= 0.08
