@@ -22,7 +22,6 @@ from ..event import memory_type_for_item
 
 if TYPE_CHECKING:
     from ..db.alias_store import AliasRegistry
-    from ..embedder import Embedder
     from .coercion import EventCoercer
 
 
@@ -33,38 +32,26 @@ class EventDeduplicator:
         self,
         coercer: EventCoercer,
         conflict_pair_fn: Callable[[str, str], bool] | None = None,
-        embedder: Embedder | None = None,
         alias_registry: AliasRegistry | None = None,
     ) -> None:
         self._coercer = coercer
         self._conflict_pair_fn = conflict_pair_fn
-        self._embedder = embedder
         self._alias_registry = alias_registry
 
-    def _sync_embed(self, texts: list[str]) -> list[list[float]] | None:
-        """Embed texts synchronously. Returns None on any failure.
+    def event_similarity(
+        self,
+        left: dict[str, Any],
+        right: dict[str, Any],
+        *,
+        left_vec: list[float] | None = None,
+        right_vec: list[float] | None = None,
+    ) -> tuple[float, float]:
+        """Compute similarity between two events (lexical, semantic).
 
-        Called from sync ``event_similarity`` which runs inside a running
-        event loop (micro-extraction, consolidation). Uses a separate thread
-        with ``asyncio.run()`` to avoid deadlocking the caller's loop.
-        Works reliably with ``HashEmbedder`` and ``LocalEmbedder``.
-        ``OpenAIEmbedder`` may create a transient connection per call
-        (acceptable cost for dedup-time similarity).
+        When both ``left_vec`` and ``right_vec`` are provided, semantic similarity
+        is computed as cosine distance between the vectors. Otherwise semantic
+        falls back to lexical (no embedding calls — dedup does not own an embedder).
         """
-        if not self._embedder or not self._embedder.available:
-            return None
-        import asyncio
-        import concurrent.futures
-
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(asyncio.run, self._embedder.embed_batch(texts))
-                return future.result(timeout=5.0)
-        except Exception:  # crash-barrier: embedding failure falls back to lexical
-            return None
-
-    def event_similarity(self, left: dict[str, Any], right: dict[str, Any]) -> tuple[float, float]:
-        """Compute Jaccard similarity between two events (lexical, semantic)."""
 
         def _event_text(event: dict[str, Any]) -> str:
             summary = str(event.get("summary", ""))
@@ -88,16 +75,14 @@ class EventDeduplicator:
         union = left_tokens | right_tokens
         lexical = (len(overlap) / len(union)) if union else 0.0
 
-        # Compute embedding cosine similarity if embedder available
-        semantic = lexical  # fallback
-        if self._embedder and self._embedder.available:
-            vecs = self._sync_embed([left_text, right_text])
-            if vecs and len(vecs) == 2 and vecs[0] and vecs[1]:
-                dot = sum(a * b for a, b in zip(vecs[0], vecs[1]))
-                norm_l = sum(a * a for a in vecs[0]) ** 0.5
-                norm_r = sum(b * b for b in vecs[1]) ** 0.5
-                if norm_l > 0 and norm_r > 0:
-                    semantic = dot / (norm_l * norm_r)
+        # Use pre-computed vectors when available; otherwise semantic = lexical
+        semantic = lexical
+        if left_vec is not None and right_vec is not None:
+            dot = sum(a * b for a, b in zip(left_vec, right_vec))
+            norm_l = sum(a * a for a in left_vec) ** 0.5
+            norm_r = sum(b * b for b in right_vec) ** 0.5
+            if norm_l > 0 and norm_r > 0:
+                semantic = dot / (norm_l * norm_r)
 
         return lexical, semantic
 
@@ -105,6 +90,9 @@ class EventDeduplicator:
         self,
         candidate: dict[str, Any],
         existing_events: list[dict[str, Any]],
+        *,
+        candidate_vec: list[float] | None = None,
+        existing_vecs: dict[str, list[float]] | None = None,
     ) -> tuple[int | None, float]:
         """Find an existing event that is a semantic duplicate of *candidate*."""
         best_idx: int | None = None
@@ -114,7 +102,11 @@ class EventDeduplicator:
         for idx, existing in enumerate(existing_events):
             if str(existing.get("type", "")) != candidate_type:
                 continue
-            lexical, semantic = self.event_similarity(candidate, existing)
+            existing_id = str(existing.get("id", ""))
+            existing_vec = existing_vecs.get(existing_id) if existing_vecs else None
+            lexical, semantic = self.event_similarity(
+                candidate, existing, left_vec=candidate_vec, right_vec=existing_vec
+            )
             candidate_entities = {
                 normalize_entity_name(x) for x in _to_str_list(candidate.get("entities"))
             }
@@ -152,6 +144,9 @@ class EventDeduplicator:
         self,
         candidate: dict[str, Any],
         existing_events: list[dict[str, Any]],
+        *,
+        candidate_vec: list[float] | None = None,
+        existing_vecs: dict[str, list[float]] | None = None,
     ) -> int | None:
         """Find an existing event that the *candidate* supersedes (contradicts)."""
         if memory_type_for_item(candidate) != "semantic":
@@ -198,7 +193,11 @@ class EventDeduplicator:
             if not has_conflict:
                 continue
 
-            lexical, semantic = self.event_similarity(candidate, existing)
+            existing_id = str(existing.get("id", ""))
+            existing_vec = existing_vecs.get(existing_id) if existing_vecs else None
+            lexical, semantic = self.event_similarity(
+                candidate, existing, left_vec=candidate_vec, right_vec=existing_vec
+            )
             if lexical >= 0.35 or semantic >= 0.35:
                 return idx
         return None

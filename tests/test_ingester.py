@@ -339,7 +339,7 @@ class TestAppendEventsEmbeddings:
         dedup = MagicMock()
         dedup.find_semantic_duplicate = MagicMock(return_value=(None, 0.0))
         ingester = EventIngester(coercer=coercer, dedup=dedup, graph=None, db=db)
-        ingester._find_dedup_candidates = MagicMock(return_value=[])
+        ingester._find_dedup_candidates = MagicMock(return_value=([], {}))
 
         event = MemoryEvent(
             id="test-embed-001",
@@ -369,7 +369,7 @@ class TestAppendEventsEmbeddings:
         dedup = MagicMock()
         dedup.find_semantic_duplicate = MagicMock(return_value=(None, 0.0))
         ingester = EventIngester(coercer=coercer, dedup=dedup, graph=None, db=db)
-        ingester._find_dedup_candidates = MagicMock(return_value=[])
+        ingester._find_dedup_candidates = MagicMock(return_value=([], {}))
 
         event = MemoryEvent(
             id="test-no-embed",
@@ -490,4 +490,48 @@ class TestSearchFtsWithVectors:
         events, vectors = db.event_store.search_fts_with_vectors("nonexistent", k=10)
         assert events == []
         assert vectors == {}
+        db.close()
+
+
+class TestDedupEmbeddingFlow:
+    """Test that append_events threads embeddings to dedup methods."""
+
+    def test_caller_embeddings_passed_to_dedup(self, tmp_path: Path) -> None:
+        """Pre-computed embeddings from caller flow to find_semantic_duplicate."""
+        db = MemoryDatabase(tmp_path / "memory.db", dims=4)
+        # Seed an existing event WITH a stored embedding
+        db.event_store.insert_event(
+            {
+                "id": "existing-001",
+                "type": "fact",
+                "summary": "User likes Python programming language",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            embedding=[0.5, 0.5, 0.5, 0.5],
+        )
+
+        graph = MagicMock()
+        graph.enabled = False
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        dedup = EventDeduplicator(coercer=coercer)
+        ing = EventIngester(coercer=coercer, dedup=dedup, graph=graph, db=db.event_store)
+
+        new_event = MemoryEvent.from_dict(
+            {
+                "id": "new-001",
+                "type": "fact",
+                "summary": "User likes Python programming language very much",
+                "timestamp": "2026-01-02T00:00:00Z",
+            }
+        )
+        caller_vec = [0.5, 0.5, 0.5, 0.5]
+        embeddings = {"new-001": caller_vec}
+
+        # Should work without hanging (no OpenAI calls)
+        ing.append_events([new_event], embeddings=embeddings)
+
+        # Event should have been merged (high lexical + stored vectors available)
+        events = db.event_store.read_events(limit=100)
+        assert len(events) == 1  # merged, not 2
         db.close()
