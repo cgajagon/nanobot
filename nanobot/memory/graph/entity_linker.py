@@ -16,7 +16,7 @@ from nanobot.memory._text import normalize_entity_name
 # Alias map — shorthand → canonical name
 # ---------------------------------------------------------------------------
 
-_ALIAS_MAP: dict[str, str] = {
+ALIAS_MAP: dict[str, str] = {
     # Databases
     "pg": "postgresql",
     "postgres": "postgresql",
@@ -46,4 +46,4 @@ def resolve_alias(name: str) -> str:
     Returns the original name (stripped) if no alias is registered.
     """
     key = normalize_entity_name(name)
-    return _ALIAS_MAP.get(key, name.strip())
+    return ALIAS_MAP.get(key, name.strip())

@@ -197,9 +197,20 @@ write time. No architectural changes needed — fuzzy matching adds logic to the
 
 ## Open decisions
 
-1. **Entity linker static map** — keep `_ALIAS_MAP` as seed data or migrate entirely
-   into config? Keeping it as code is simpler and avoids config bloat. Recommend: keep
-   as seed source.
+1. **Entity linker static map** — renamed to `ALIAS_MAP` (public). Kept as code seed
+   source rather than migrated to config.
 2. **Alias confidence evolution** — should alias confidence decay if never re-observed?
    Not for Phase 1-2. Aliases are permanent once established. Revisit if false positives
    become an issue.
+
+## Deviations
+
+1. **`resolve_alias()` does not accept `AliasRegistry` param** — the spec proposed adding
+   an optional registry parameter to `resolve_alias()`. This was intentionally omitted
+   because the only production caller is `entity_classifier.py`, which needs only the
+   static technology aliases (pg→postgresql, etc.), not user-specific aliases. The
+   `AliasRegistry` is wired into the two places where dynamic alias resolution matters:
+   `EventDeduplicator.event_similarity()` and `KnowledgeGraph.upsert_entity()`.
+2. **`register_batch()` removed** — the spec mentioned `register_batch()` on `AliasStore`.
+   It was removed during code review as dead code (zero callers, broken transaction
+   semantics). Individual `register()` calls suffice for all current seeding paths.

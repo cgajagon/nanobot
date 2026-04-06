@@ -52,11 +52,6 @@ class AliasStore:
                 (alias, canonical, confidence, source),
             )
 
-    def register_batch(self, entries: list[tuple[str, str, float, str]]) -> None:
-        """Upsert multiple aliases. Each entry: (alias, canonical, confidence, source)."""
-        for alias, canonical, confidence, source in entries:
-            self.register(alias, canonical, confidence=confidence, source=source)
-
     def get_canonical(self, alias: str) -> str | None:
         """Look up a single alias. Returns None if not found."""
         row = self._conn.execute(

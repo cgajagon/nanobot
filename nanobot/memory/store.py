@@ -27,7 +27,7 @@ from .constants import PROFILE_KEYS
 from .db import MemoryDatabase
 from .db.alias_store import AliasRegistry
 from .embedder import HashEmbedder, LocalEmbedder, OpenAIEmbedder
-from .graph.entity_linker import _ALIAS_MAP
+from .graph.entity_linker import ALIAS_MAP
 from .graph.graph import KnowledgeGraph
 from .maintenance import MemoryMaintenance
 from .persistence.profile_io import ProfileStore
@@ -282,7 +282,7 @@ class MemoryStore:
             store.register(normalize_entity_name(alias), "_user_", confidence=1.0, source="config")
 
         # Source 2: static entity_linker map
-        for alias, canonical in _ALIAS_MAP.items():
+        for alias, canonical in ALIAS_MAP.items():
             store.register(
                 normalize_entity_name(alias),
                 normalize_entity_name(canonical),
@@ -293,6 +293,10 @@ class MemoryStore:
         # Source 3: existing graph entity aliases (if graph enabled)
         if self._memory_config.graph_enabled:
             rows = self.db.graph_store.search_entities("", limit=1000)
+            if len(rows) >= 1000:
+                logger.warning(
+                    "Graph entity seed truncated at 1000; some aliases may not be registered"
+                )
             for row in rows:
                 canonical = str(row.get("name", ""))
                 aliases_text = str(row.get("aliases", ""))

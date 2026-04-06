@@ -75,7 +75,7 @@ _POSSESSIVE_RE = re.compile(r"['\u2018\u2019]s$", re.IGNORECASE)
 # Titles stripped only at start of name
 _TITLE_RE = re.compile(r"^(?:dr|mr|mrs|ms|prof)\.?\s+", re.IGNORECASE)
 
-# Punctuation to strip (keep hyphens, underscores, alphanumeric, spaces)
+# Punctuation to strip (keep Unicode word chars, spaces, hyphens)
 _ENTITY_PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
 
 

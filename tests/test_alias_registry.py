@@ -23,15 +23,6 @@ class TestAliasStore:
         result = store.load_all()
         assert result == {"carlos": "user", "pg": "postgresql"}
 
-    def test_register_batch(self) -> None:
-        store = AliasStore(_make_conn())
-        entries = [
-            ("carlos", "user", 1.0, "config"),
-            ("the_user", "user", 0.9, "config"),
-        ]
-        store.register_batch(entries)
-        assert store.load_all() == {"carlos": "user", "the_user": "user"}
-
     def test_higher_confidence_wins(self) -> None:
         store = AliasStore(_make_conn())
         store.register("carlos", "person_a", confidence=0.5, source="graph")
