@@ -21,35 +21,35 @@ repos:
     hooks:
       - id: mypy
         name: mypy type check
-        entry: python -m mypy nanobot/
+        entry: bash scripts/venv_python.sh -m mypy nanobot/
         language: system
         types: [python]
         pass_filenames: false
       - id: import-check
         name: import boundary check
-        entry: python scripts/check_imports.py
+        entry: bash scripts/venv_python.sh scripts/check_imports.py
         language: system
         pass_filenames: false
       - id: structure-check
         name: structure check
-        entry: python scripts/check_structure.py
+        entry: bash scripts/venv_python.sh scripts/check_structure.py
         language: system
         pass_filenames: false
       - id: prompt-check
         name: prompt manifest check
-        entry: python scripts/check_prompt_manifest.py
+        entry: bash scripts/venv_python.sh scripts/check_prompt_manifest.py
         language: system
         pass_filenames: false
         files: '^prompts/'
       - id: phase-todo-check
         name: phase TODO check
-        entry: python scripts/check_phase_todos.py
+        entry: bash scripts/venv_python.sh scripts/check_phase_todos.py
         language: system
         pass_filenames: false
         files: '^nanobot/'
       - id: doc-check
         name: doc reference check
-        entry: python scripts/check_doc_references.py
+        entry: bash scripts/venv_python.sh scripts/check_doc_references.py
         language: system
         pass_filenames: false
         files: '^\.claude/rules/(architecture|cognitive-architecture|memory-architecture)\.md$'
