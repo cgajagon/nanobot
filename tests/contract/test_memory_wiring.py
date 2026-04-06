@@ -99,6 +99,14 @@ def test_alias_store_property(tmp_path: Path) -> None:
     assert store.db.alias_store is alias_store
 
 
+def test_last_confirmed_column_exists(tmp_path: Path) -> None:
+    """last_confirmed column is created by schema migration."""
+    store = _make_store(tmp_path)
+    cursor = store.db.connection.execute("PRAGMA table_info(events)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    assert "last_confirmed" in columns
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod

@@ -139,6 +139,10 @@ class MemoryEvent(BaseModel):
     supersedes_event_id: str = ""
     supersedes_at: str = ""
 
+    # Temporal confirmation
+    last_confirmed: str = ""
+    source_role: str = ""  # "user" | "assistant" | "tool" | "consolidation" | ""
+
     model_config = {"extra": "allow"}
 
     @field_validator("summary")

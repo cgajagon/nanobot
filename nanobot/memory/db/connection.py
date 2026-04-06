@@ -73,6 +73,7 @@ class MemoryDatabase:
                 "Failed to load sqlite-vec extension. Install with: pip install sqlite-vec"
             ) from None
         self._init_schema()
+        self._migrate_schema()
 
         # Lazy references set by Tasks 2-3 (EventStore, GraphStore).
         self._alias_store: AliasStore | None = None
@@ -155,6 +156,13 @@ class MemoryDatabase:
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
         """)
+
+    def _migrate_schema(self) -> None:
+        """Apply incremental schema migrations for columns added after initial release."""
+        try:
+            self._conn.execute("ALTER TABLE events ADD COLUMN last_confirmed TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
     # ------------------------------------------------------------------
     # Connection access
