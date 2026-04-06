@@ -44,6 +44,11 @@ RUN rm -rf /install/lib/python3.12/site-packages/pip* \
            /install/lib/python3.12/site-packages/trove_classifiers* \
            /install/lib/python3.12/site-packages/editables* \
            2>/dev/null; true
+# packaging is a runtime dep of langfuse/onnxruntime but pip resolves it from
+# the system site-packages ("Requirement already satisfied") instead of
+# installing into --prefix=/install.  Copy it explicitly after cleanup.
+RUN cp -r /usr/local/lib/python3.12/site-packages/packaging* \
+          /install/lib/python3.12/site-packages/ 2>/dev/null; true
 
 
 # ============== STAGE 2: Runtime ==============
