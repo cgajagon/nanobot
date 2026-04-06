@@ -107,6 +107,19 @@ def test_last_confirmed_column_exists(tmp_path: Path) -> None:
     assert "last_confirmed" in columns
 
 
+def test_source_role_in_micro_extract_schema() -> None:
+    """_MICRO_EXTRACT_TOOL schema includes source_role field."""
+    from nanobot.memory.write.micro_extractor import _MICRO_EXTRACT_TOOL
+
+    props = _MICRO_EXTRACT_TOOL[0]["function"]["parameters"]["properties"]["events"]["items"][
+        "properties"
+    ]
+    assert "source_role" in props
+    assert props["source_role"]["type"] == "string"
+    assert "user" in props["source_role"]["enum"]
+    assert "assistant" in props["source_role"]["enum"]
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod

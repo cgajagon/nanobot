@@ -61,6 +61,14 @@ _MICRO_EXTRACT_TOOL: list[dict[str, Any]] = [
                                     "items": {"type": "string"},
                                 },
                                 "confidence": {"type": "number"},
+                                "source_role": {
+                                    "type": "string",
+                                    "enum": ["user", "assistant"],
+                                    "description": (
+                                        "Whether the fact originated from the user's "
+                                        "message or the assistant's response"
+                                    ),
+                                },
                             },
                             "required": ["type", "summary"],
                         },
