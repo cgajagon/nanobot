@@ -255,6 +255,15 @@ CREATE TABLE strategies (
 CREATE INDEX idx_strategies_domain ON strategies(domain);
 CREATE INDEX idx_strategies_task_type ON strategies(task_type);
 
+-- Entity alias registry (unified alias resolution)
+CREATE TABLE alias_registry (
+    alias      TEXT PRIMARY KEY,
+    canonical  TEXT NOT NULL,
+    confidence REAL DEFAULT 0.8,
+    source     TEXT DEFAULT 'config'
+);
+CREATE INDEX idx_alias_canonical ON alias_registry(canonical);
+
 -- Performance indexes (added PR#122)
 CREATE INDEX idx_events_type ON events(type);
 CREATE INDEX idx_events_status ON events(status);
@@ -391,9 +400,9 @@ Three-level dedup in `append_events()`, evaluated in order:
 2. **Semantic supersession:** Detects negation conflicts (token containing `" not "` or
    `"n't"` + >= 0.45 token overlap + lexical/semantic >= 0.35). Old event marked
    `"superseded"`, new event links via `supersedes_event_id`.
-3. **Semantic duplicate:** Composite score `0.85 * lexical + 0.15 * entity_overlap`
-   (note: `semantic = lexical` — embedding similarity not yet implemented). Multi-threshold
-   OR condition triggers merge.
+3. **Semantic duplicate:** Composite score `0.4 * semantic + 0.45 * lexical + 0.15 * entity_overlap`
+   with real embedding cosine similarity via the `Embedder` protocol (falls back to
+   lexical when embedder unavailable). Multi-threshold OR condition triggers merge.
 
 **Merge behavior:** Entities unioned, confidence averaged + 0.03 boost, salience takes
 max, evidence capped at 20, source spans merged, timestamp uses newer,
@@ -674,8 +683,9 @@ order (simplified):
 8.  TokenBudgetAllocator
 9.  MemoryMaintenance (depends on: 2)
 10. Reranker (Composite or ONNX, based on config)
-11. KnowledgeGraph (depends on: 2, conditional on graph_enabled)
-12. EventDeduplicator (depends on: 4)
+10.5 AliasRegistry (depends on: 2, seeded from config + linker + graph)
+11. KnowledgeGraph (depends on: 2, 10.5, conditional on graph_enabled)
+12. EventDeduplicator (depends on: 4, 10.5)
 13. EventIngester (depends on: 4, 12, 11, 2, 1)
 14. ConflictManager (depends on: 6, 2)
 15. POST-WIRE: ProfileStore.set_conflict_mgr(14)

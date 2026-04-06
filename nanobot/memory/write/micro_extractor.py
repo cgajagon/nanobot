@@ -61,6 +61,10 @@ _MICRO_EXTRACT_TOOL: list[dict[str, Any]] = [
                                     "items": {"type": "string"},
                                 },
                                 "confidence": {"type": "number"},
+                                # Restricted to user/assistant — micro-extraction
+                                # only processes user+assistant message pairs.
+                                # Coercion accepts "tool"/"consolidation" too for
+                                # programmatic sources.
                                 "source_role": {
                                     "type": "string",
                                     "enum": ["user", "assistant"],
