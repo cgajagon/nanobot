@@ -121,9 +121,10 @@ class EventIngester:
                 continue
 
             # Step 2: Supersession — FTS5 pre-filter then existing logic
+            candidate_vec = embeddings.get(event_id) if embeddings else None
             supersession_found = False
             if memory_type_for_item(candidate) == "semantic":
-                fts_candidates = self._find_dedup_candidates(candidate, limit=30)
+                fts_candidates, fts_vectors = self._find_dedup_candidates(candidate, limit=30)
                 semantic_candidates = [
                     c
                     for c in fts_candidates
@@ -132,7 +133,10 @@ class EventIngester:
                 ]
                 if semantic_candidates:
                     superseded_idx = self._dedup.find_semantic_supersession(
-                        candidate, semantic_candidates
+                        candidate,
+                        semantic_candidates,
+                        candidate_vec=candidate_vec,
+                        existing_vecs=fts_vectors,
                     )
                     if superseded_idx is not None:
                         now_iso = _utc_now_iso()
@@ -152,10 +156,13 @@ class EventIngester:
 
             # Step 3: Semantic duplicate — FTS5 pre-filter + Jaccard
             if not supersession_found:
-                fts_candidates = self._find_dedup_candidates(candidate, limit=30)
+                fts_candidates, fts_vectors = self._find_dedup_candidates(candidate, limit=30)
                 if fts_candidates:
                     dup_idx, dup_score = self._dedup.find_semantic_duplicate(
-                        candidate, fts_candidates
+                        candidate,
+                        fts_candidates,
+                        candidate_vec=candidate_vec,
+                        existing_vecs=fts_vectors,
                     )
                     if dup_idx is not None:
                         merged_event = self._dedup.merge_events(
@@ -187,28 +194,33 @@ class EventIngester:
 
     def _find_dedup_candidates(
         self, candidate: dict[str, Any], limit: int = 30
-    ) -> list[dict[str, Any]]:
-        """Use FTS5 to find events with overlapping tokens, filtered by type.
+    ) -> tuple[list[dict[str, Any]], dict[str, list[float]]]:
+        """Use FTS5 to find events with overlapping tokens, with stored embeddings.
 
-        Passes the raw summary text to ``search_fts()`` which handles
-        tokenization and FTS5 query building internally.
+        Returns (candidates, vectors_dict) where vectors_dict maps event ID to
+        stored embedding vector for candidates that have one.
         """
         if self._db is None:
-            return []
+            return [], {}
         summary = str(candidate.get("summary", ""))
         event_type = str(candidate.get("type", ""))
         query_text = f"{event_type} {summary}".strip()
         if not query_text:
-            return []
-        fts_results = self._db.search_fts(query_text, k=limit * 2)
+            return [], {}
+        fts_results, all_vectors = self._db.search_fts_with_vectors(query_text, k=limit * 2)
         candidates: list[dict[str, Any]] = []
-        for row in fts_results:
-            event = self._unpack_event(row)
-            if str(event.get("type", "")) == event_type:
-                candidates.append(self._coercer.ensure_event_provenance(event))
+        candidate_vectors: dict[str, list[float]] = {}
+        for event in fts_results:
+            unpacked = self._unpack_event(event)
+            if str(unpacked.get("type", "")) == event_type:
+                provenance = self._coercer.ensure_event_provenance(unpacked)
+                candidates.append(provenance)
+                event_id = str(provenance.get("id", ""))
+                if event_id in all_vectors:
+                    candidate_vectors[event_id] = all_vectors[event_id]
             if len(candidates) >= limit:
                 break
-        return candidates
+        return candidates, candidate_vectors
 
     def _unpack_event(self, row: dict[str, Any]) -> dict[str, Any]:
         """Unpack metadata._extra from a raw DB row to top-level keys."""

@@ -401,8 +401,9 @@ Three-level dedup in `append_events()`, evaluated in order:
    `"n't"` + >= 0.45 token overlap + lexical/semantic >= 0.35). Old event marked
    `"superseded"`, new event links via `supersedes_event_id`.
 3. **Semantic duplicate:** Composite score `0.4 * semantic + 0.45 * lexical + 0.15 * entity_overlap`
-   with real embedding cosine similarity via the `Embedder` protocol (falls back to
-   lexical when embedder unavailable). Multi-threshold OR condition triggers merge.
+   with embedding cosine similarity from pre-computed vectors (caller-provided for new
+   events, `events_vec` for stored events; falls back to lexical when vectors unavailable).
+   Multi-threshold OR condition triggers merge.
 
 **Merge behavior:** Entities unioned, confidence averaged + 0.03 boost, salience takes
 max, evidence capped at 20, source spans merged, timestamp uses newer,
@@ -421,6 +422,7 @@ Micro-extraction bypasses several steps the full path performs:
 | Graph triples | Ingested via `_ingest_graph_triples()` | Skipped entirely |
 | Profile updates | Applied via `_apply_profile_updates()` | Skipped entirely |
 | Snapshot rebuild | Called at end | Skipped entirely |
+| Dedup embedding | Pre-computed vectors from caller + stored vectors from `events_vec` | Same |
 
 ---
 
@@ -824,6 +826,11 @@ similarity computation and graph entity resolution.
 embedding cosine similarity via the `Embedder` protocol. Falls back to lexical when
 embedder is unavailable.
 
+**Resolved:** `EventDeduplicator._sync_embed()` removed. Dedup no longer owns an
+embedder instance or makes per-candidate embedding API calls. Instead, callers
+pre-compute vectors and the dedup pipeline reads stored vectors from `events_vec`.
+This eliminated a 773-second bottleneck in consolidation.
+
 ### Dead Code and Unused Parameters
 
 All items resolved. Previous items and their resolution:
@@ -862,6 +869,8 @@ All other items resolved:
 | `profile_mgr` backward-compat | **Fixed** — renamed to `profile_store` throughout |
 | `_norm` duplication | **Fixed** — single definition in `graph/__init__.py`, imported by both |
 | `_db` in Protocol | **Fixed** — `KnowledgeGraph` exposes `get_entity_row()`, `get_edges_from()`, `get_edges_to()` public methods; protocol uses those instead of `_db` |
+| `_sync_embed` in dedup | **Removed** — dedup no longer owns an embedder; uses pre-computed vectors from callers and `events_vec` storage |
+| sync `append_events` in async callers | **Fixed** — micro-extractor and consolidation pipeline now use `asyncio.to_thread()` |
 
 ---
 

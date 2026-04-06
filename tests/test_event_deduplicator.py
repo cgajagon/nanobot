@@ -14,7 +14,6 @@ from nanobot.memory.write.dedup import EventDeduplicator
 def _make_dedup(
     *,
     conflict_pair_fn: object = None,
-    embedder: object = None,
     alias_registry: object = None,
 ) -> EventDeduplicator:
     classifier = EventClassifier()
@@ -22,7 +21,6 @@ def _make_dedup(
     return EventDeduplicator(
         coercer=coercer,
         conflict_pair_fn=conflict_pair_fn,
-        embedder=embedder,
         alias_registry=alias_registry,
     )
 
@@ -256,24 +254,88 @@ class TestEntityNormalizationInSimilarity:
 
 
 class TestEmbeddingSemanticSimilarity:
-    def test_semantic_differs_from_lexical_with_embedder(self) -> None:
-        """With an embedder, semantic should use cosine, not equal lexical."""
-        from nanobot.memory.embedder import HashEmbedder
-
-        embedder = HashEmbedder(dims=384)
-        d = _make_dedup(embedder=embedder)
+    def test_semantic_uses_vectors_when_provided(self) -> None:
+        """With vectors, semantic should use cosine, not equal lexical."""
+        d = _make_dedup()
         a = {"type": "fact", "summary": "User enjoys programming in Python"}
         b = {"type": "fact", "summary": "Carlos likes coding with Python language"}
-        lexical, semantic = d.event_similarity(a, b)
+        vec_a = [1.0, 0.0, 0.0]
+        vec_b = [0.9, 0.1, 0.0]
+        lexical, semantic = d.event_similarity(a, b, left_vec=vec_a, right_vec=vec_b)
         assert semantic != lexical
 
-    def test_semantic_equals_lexical_without_embedder(self) -> None:
-        """Without embedder, semantic falls back to lexical."""
+    def test_semantic_equals_lexical_without_vectors(self) -> None:
+        """Without vectors, semantic falls back to lexical."""
         d = _make_dedup()
         a = {"type": "fact", "summary": "User likes Python"}
         b = {"type": "fact", "summary": "User likes Python and Java"}
         lexical, semantic = d.event_similarity(a, b)
         assert semantic == lexical
+
+
+class TestVectorInjection:
+    def test_event_similarity_uses_provided_vectors(self) -> None:
+        """When both vectors are provided, semantic should be cosine, not lexical."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "User likes Python"}
+        b = {"type": "fact", "summary": "Completely different topic about weather"}
+        vec = [1.0, 0.0, 0.0]
+        lexical, semantic = d.event_similarity(a, b, left_vec=vec, right_vec=vec)
+        assert lexical < 0.3
+        assert semantic == 1.0
+
+    def test_event_similarity_partial_vectors_falls_back(self) -> None:
+        """When only one vector provided, semantic = lexical."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "User likes Python"}
+        b = {"type": "fact", "summary": "User likes Python"}
+        lexical, semantic = d.event_similarity(a, b, left_vec=[1.0, 0.0])
+        assert semantic == lexical
+
+    def test_find_duplicate_with_vectors(self) -> None:
+        """find_semantic_duplicate should thread vectors to event_similarity."""
+        d = _make_dedup()
+        existing = [
+            {"id": "e1", "type": "fact", "summary": "User likes Python", "entities": ["Python"]},
+        ]
+        candidate = {
+            "id": "c1",
+            "type": "fact",
+            "summary": "User likes Python",
+            "entities": ["Python"],
+        }
+        candidate_vec = [1.0, 0.0, 0.0]
+        existing_vecs = {"e1": [1.0, 0.0, 0.0]}
+        idx, score = d.find_semantic_duplicate(
+            candidate, existing, candidate_vec=candidate_vec, existing_vecs=existing_vecs
+        )
+        assert idx == 0
+
+    def test_find_supersession_with_vectors(self) -> None:
+        """find_semantic_supersession should thread vectors to event_similarity."""
+        d = _make_dedup()
+        existing = [
+            {
+                "id": "e1",
+                "type": "preference",
+                "summary": "User likes dark mode",
+                "entities": ["dark mode"],
+                "memory_type": "semantic",
+            }
+        ]
+        candidate = {
+            "id": "c1",
+            "type": "preference",
+            "summary": "User does not like dark mode",
+            "entities": ["dark mode"],
+            "memory_type": "semantic",
+        }
+        candidate_vec = [1.0, 0.0, 0.0]
+        existing_vecs = {"e1": [0.9, 0.1, 0.0]}
+        idx = d.find_semantic_supersession(
+            candidate, existing, candidate_vec=candidate_vec, existing_vecs=existing_vecs
+        )
+        assert idx == 0
 
 
 class TestMergeSourceSpan:

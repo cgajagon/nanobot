@@ -194,7 +194,7 @@ class MicroExtractor:
                         event.type, event.summary, event.timestamp
                     )
             embeddings = await self._compute_embeddings(events)
-            self._ingester.append_events(events, embeddings=embeddings)
+            await asyncio.to_thread(self._ingester.append_events, events, embeddings)
             logger.info("Micro-extraction: {} event(s) ingested", len(events))
         except Exception:  # crash-barrier: best-effort background extraction
             logger.opt(exception=True).warning("Micro-extraction failed")

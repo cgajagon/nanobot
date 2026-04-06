@@ -178,7 +178,6 @@ class MemoryStore:
             coercer=self._coercer,
             conflict_pair_fn=self.profile_mgr._conflict_pair,
             alias_registry=self.alias_registry,
-            embedder=self._embedder,
         )
         self.ingester = EventIngester(
             coercer=self._coercer,
