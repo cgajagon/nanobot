@@ -67,6 +67,11 @@ class CronTool(Tool):
         tz: str | None = kwargs.pop("tz", None)
         at: str | None = kwargs.pop("at", None)
         job_id: str | None = kwargs.pop("job_id", None)
+        if action in ("add", "enable", "update") and not self._cron._running:
+            return ToolResult.fail(
+                "Cron scheduling is not available in this mode. "
+                "Use `nanobot gateway` to run the agent with cron support."
+            )
         if action == "add":
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":
