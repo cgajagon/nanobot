@@ -479,7 +479,6 @@ Main command table + 4 collapsed `<details>` blocks for subgroups (cron, heartbe
 | `nanobot agent` | Interactive chat (REPL) |
 | `nanobot agent -m "..."` | Single-shot message |
 | `nanobot gateway` | Start the gateway (all channels) |
-| `nanobot ui` | Launch web UI |
 | `nanobot status` | Show provider and channel status |
 | `nanobot provider login <name>` | OAuth login (openai-codex, github-copilot) |
 | `nanobot channels status` | Show channel connection status |
