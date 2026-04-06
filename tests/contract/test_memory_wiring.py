@@ -99,12 +99,13 @@ def test_alias_store_property(tmp_path: Path) -> None:
     assert store.db.alias_store is alias_store
 
 
-def test_last_confirmed_column_exists(tmp_path: Path) -> None:
-    """last_confirmed column is created by schema migration."""
-    store = _make_store(tmp_path)
-    cursor = store.db.connection.execute("PRAGMA table_info(events)")
-    columns = {row["name"] for row in cursor.fetchall()}
-    assert "last_confirmed" in columns
+def test_last_confirmed_field_on_memory_event() -> None:
+    """MemoryEvent has last_confirmed and source_role fields (stored in _extra overflow)."""
+    from nanobot.memory.event import MemoryEvent
+
+    event = MemoryEvent(summary="test", last_confirmed="2025-01-01T00:00:00Z", source_role="user")
+    assert event.last_confirmed == "2025-01-01T00:00:00Z"
+    assert event.source_role == "user"
 
 
 def test_source_role_in_micro_extract_schema() -> None:

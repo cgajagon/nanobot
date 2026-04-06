@@ -2,7 +2,7 @@
 
 > Living document. Governs the memory subsystem design, patterns, and constraints.
 > Companion to `cognitive-architecture.md` (agent core) and `architecture.md` (system-wide).
-> Last updated: 2026-04-01.
+> Last updated: 2026-04-06.
 
 ---
 
@@ -201,8 +201,7 @@ universally separate these concerns.
 CREATE TABLE events (
     id TEXT PRIMARY KEY, type TEXT NOT NULL, summary TEXT NOT NULL,
     timestamp TEXT NOT NULL, source TEXT, status TEXT DEFAULT 'active',
-    metadata TEXT, created_at TEXT NOT NULL,
-    last_confirmed TEXT  -- when fact was last genuinely re-observed (migration-added)
+    metadata TEXT, created_at TEXT NOT NULL
 );
 
 -- Full-text search (content-synced via triggers)
