@@ -124,7 +124,6 @@ Note for former systemd users: `deploy/migrate-from-systemd.sh` handles one-time
 | `nanobot agent` | Interactive chat (REPL) |
 | `nanobot agent -m "..."` | Single-shot message |
 | `nanobot gateway` | Start the gateway (all channels) |
-| `nanobot ui` | Launch web UI |
 | `nanobot status` | Show provider and channel status |
 | `nanobot provider login <name>` | OAuth login (openai-codex, github-copilot) |
 | `nanobot channels status` | Show channel connection status |

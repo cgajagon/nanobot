@@ -22,7 +22,6 @@ from nanobot.cli.agent import agent as _agent_impl
 from nanobot.cli.channels import channels_app
 from nanobot.cli.cron import cron_app
 from nanobot.cli.gateway import gateway as _gateway_impl
-from nanobot.cli.gateway import ui as _ui_impl
 from nanobot.cli.memory import memory_app
 from nanobot.cli.provider import provider_app
 from nanobot.cli.routing import replay_deadletters, routing_app
@@ -71,7 +70,6 @@ def status() -> None:
 
 
 app.command()(_gateway_impl)
-app.command()(_ui_impl)
 app.command()(_agent_impl)
 
 # ---------------------------------------------------------------------------

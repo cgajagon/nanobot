@@ -25,18 +25,14 @@ class WebChannel(BaseChannel):
     """Request-driven channel for the web UI.
 
     Unlike long-running channels (Telegram, Discord) this channel is driven
-    by incoming HTTP requests.  ``start()``/``stop()`` manage only the
-    outbound dispatcher task which routes agent responses to per-request
-    SSE streams.
-
-    When *managed* is ``True`` the channel is owned by :class:`ChannelManager`
-    which runs its own bus consumer.  In that case ``start()`` is a no-op
-    (no private dispatcher) and messages arrive directly via ``send()``.
+    by incoming HTTP requests.  Message routing is handled by
+    :class:`ChannelManager`'s dispatcher which calls :meth:`send` directly.
+    ``start()``/``stop()`` manage only the running state.
     """
 
     name: str = "web"
 
-    def __init__(self, config: Any, bus: MessageBus, *, managed: bool = False) -> None:
+    def __init__(self, config: Any, bus: MessageBus) -> None:
         super().__init__(config, bus)
         # chat_id → queue of outbound messages for that thread's SSE stream
         self._streams: dict[str, asyncio.Queue[OutboundMessage | None]] = {}
@@ -44,33 +40,22 @@ class WebChannel(BaseChannel):
         # Messages for these are silently dropped to avoid log spam from the
         # agent loop which may still be running.
         self._disconnected: set[str] = set()
-        self._dispatcher_task: asyncio.Task[None] | None = None
-        self._managed = managed
 
     # ------------------------------------------------------------------
     # BaseChannel interface
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the outbound dispatcher that routes responses to SSE streams.
+        """Mark the channel as running.
 
-        In managed mode the ChannelManager dispatcher calls ``send()``
-        directly, so we skip the private dispatcher.
+        Message routing is handled by :class:`ChannelManager`'s dispatcher
+        which calls :meth:`send` directly.
         """
         self._running = True
-        if not self._managed:
-            self._dispatcher_task = asyncio.create_task(self._dispatch_outbound())
 
     async def stop(self) -> None:
-        """Stop the outbound dispatcher."""
+        """Mark the channel as stopped."""
         self._running = False
-        if self._dispatcher_task and not self._dispatcher_task.done():
-            self._dispatcher_task.cancel()
-            try:
-                await self._dispatcher_task
-            # crash-barrier: dispatcher shutdown must not raise
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
 
     async def send(self, msg: OutboundMessage) -> None:
         """Route an outbound message to the SSE stream for its chat_id.
@@ -119,30 +104,3 @@ class WebChannel(BaseChannel):
             metadata=metadata,
             session_key=session_key,
         )
-
-    # ------------------------------------------------------------------
-    # Outbound dispatcher (mirrors ChannelManager._dispatch_outbound)
-    # ------------------------------------------------------------------
-
-    async def _dispatch_outbound(self) -> None:
-        """Consume outbound messages from the bus and route web messages to SSE streams."""
-        logger.info("Web outbound dispatcher started")
-        while self._running:
-            try:
-                # Block until a message is available — no timeout needed because
-                # task cancellation (via stop) handles shutdown cleanly.
-                msg = await self.bus.consume_outbound()
-
-                if msg.channel != self.name:
-                    # Not for us — in a full gateway the ChannelManager handles
-                    # other channels.  In the UI-only mode we just drop them.
-                    logger.debug("web dispatcher: ignoring channel={}", msg.channel)
-                    continue
-
-                await self.send(msg)
-
-            except asyncio.CancelledError:
-                break
-            except Exception:  # crash-barrier: keep dispatcher alive
-                logger.opt(exception=True).warning("Web dispatcher error")
-                continue

@@ -1,7 +1,7 @@
 # CLI Split: Decompose commands.py into Focused Sub-Modules
 
 **Date:** 2026-03-22
-**Status:** Draft
+**Status:** Implemented (note: `nanobot ui` command was removed in 2026-04-06)
 **Scope:** Split `nanobot/cli/commands.py` (2582 lines) into 8 focused modules,
 extract a shared `_make_agent_loop()` factory, and make `commands.py` a thin
 assembly file.

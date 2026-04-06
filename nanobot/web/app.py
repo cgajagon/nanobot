@@ -47,7 +47,6 @@ def create_app(
     *,
     static_dir: Path | None = None,
     uploads_dir: Path | None = None,
-    owns_lifecycle: bool = False,
     api_key: str = "",
     rate_limit_per_minute: int = 60,
 ) -> FastAPI:
@@ -59,19 +58,11 @@ def create_app(
         web_channel: The WebChannel bridging HTTP to the message bus.
         static_dir: Optional path to built frontend static files to serve.
         uploads_dir: Directory for saving uploaded file attachments.
-        owns_lifecycle: If True, the app lifespan shuts down the agent on exit.
-            Set to False when the gateway manages shutdown externally.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[misc]
         yield
-        if owns_lifecycle:
-            try:
-                agent_loop.stop()
-                await agent_loop.close_mcp()
-            except Exception:  # noqa: BLE001  # crash-barrier: shutdown cleanup
-                pass
 
     app = FastAPI(
         title="Nanobot Web UI",

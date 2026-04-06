@@ -65,18 +65,15 @@ def channel(bus: MagicMock) -> WebChannel:
 
 
 class TestWebChannelStartStop:
-    async def test_start_creates_dispatcher_task(self, channel: WebChannel):
+    async def test_start_sets_running(self, channel: WebChannel):
         await channel.start()
-        assert channel._dispatcher_task is not None
-        assert not channel._dispatcher_task.done()
+        assert channel._running is True
         await channel.stop()
 
-    async def test_stop_cancels_dispatcher_task(self, channel: WebChannel):
+    async def test_stop_clears_running(self, channel: WebChannel):
         await channel.start()
-        task = channel._dispatcher_task
         await channel.stop()
-        assert task is not None
-        assert task.done()
+        assert channel._running is False
 
     async def test_stop_noop_without_start(self, channel: WebChannel):
         await channel.stop()  # should not raise
@@ -116,31 +113,6 @@ class TestPublishUserMessage:
         msg = bus.publish_inbound.call_args[0][0]
         assert msg.content == "hi there"
         assert msg.chat_id == "chat-1"
-
-
-class TestDispatchOutbound:
-    async def test_routes_web_messages(self, channel: WebChannel, bus: MagicMock):
-        q = channel.register_stream("chat-1")
-        msg = OutboundMessage(channel="web", chat_id="chat-1", content="response", metadata={})
-        bus.consume_outbound = AsyncMock(side_effect=[msg, asyncio.CancelledError])
-
-        channel._running = True
-        await channel._dispatch_outbound()  # CancelledError handled internally
-
-        result = await q.get()
-        assert result.content == "response"
-
-    async def test_ignores_other_channels(self, channel: WebChannel, bus: MagicMock):
-        q = channel.register_stream("chat-1")
-        other_msg = OutboundMessage(
-            channel="telegram", chat_id="chat-1", content="wrong", metadata={}
-        )
-        bus.consume_outbound = AsyncMock(side_effect=[other_msg, asyncio.CancelledError])
-
-        channel._running = True
-        await channel._dispatch_outbound()  # CancelledError handled internally
-
-        assert q.empty()
 
 
 # ---------------------------------------------------------------------------
