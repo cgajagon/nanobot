@@ -213,10 +213,14 @@ class CronService:
 
         next_wake = self._get_next_wake_ms()
         if not next_wake or not self._running:
+            logger.debug(
+                "Cron: no wake scheduled (running={}, next_wake={})", self._running, next_wake
+            )
             return
 
         delay_ms = max(0, next_wake - _now_ms())
         delay_s = delay_ms / 1000
+        logger.debug("Cron: timer armed, next wake in {:.1f}s", delay_s)
 
         async def tick() -> None:
             await asyncio.sleep(delay_s)
@@ -236,6 +240,8 @@ class CronService:
             for j in self._store.jobs
             if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
         ]
+
+        logger.debug("Cron: timer fired, {} job(s) due", len(due_jobs))
 
         for job in due_jobs:
             await self._execute_job(job)
