@@ -441,3 +441,53 @@ class TestIngesterWithDB:
         events = ingester.read_events(limit=10)
         assert len(events) >= 1
         db.close()
+
+
+class TestSearchFtsWithVectors:
+    """Tests for EventStore.search_fts_with_vectors."""
+
+    def test_returns_events_and_vectors(self, tmp_path: Path) -> None:
+        db = MemoryDatabase(tmp_path / "memory.db", dims=4)
+        # Insert event with embedding
+        db.event_store.insert_event(
+            {
+                "id": "vec-001",
+                "type": "fact",
+                "summary": "User likes Python programming",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            embedding=[0.1, 0.2, 0.3, 0.4],
+        )
+        # Insert event without embedding
+        db.event_store.insert_event(
+            {
+                "id": "vec-002",
+                "type": "fact",
+                "summary": "User likes Python scripting",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        )
+
+        events, vectors = db.event_store.search_fts_with_vectors("Python", k=10)
+        assert len(events) == 2
+        assert "vec-001" in vectors
+        assert "vec-002" not in vectors
+        vec = vectors["vec-001"]
+        assert len(vec) == 4
+        assert abs(vec[0] - 0.1) < 0.01
+        db.close()
+
+    def test_returns_empty_on_no_match(self, tmp_path: Path) -> None:
+        db = MemoryDatabase(tmp_path / "memory.db", dims=4)
+        db.event_store.insert_event(
+            {
+                "id": "vec-003",
+                "type": "fact",
+                "summary": "User likes Python",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+        )
+        events, vectors = db.event_store.search_fts_with_vectors("nonexistent", k=10)
+        assert events == []
+        assert vectors == {}
+        db.close()

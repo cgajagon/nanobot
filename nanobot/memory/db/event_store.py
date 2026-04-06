@@ -156,6 +156,46 @@ class EventStore:
             return []
         return [dict(row) for row in rows]
 
+    def search_fts_with_vectors(
+        self, query_text: str, k: int = 10
+    ) -> tuple[list[dict[str, Any]], dict[str, list[float]]]:
+        """FTS5 search returning events and their stored embedding vectors.
+
+        Returns a tuple of (events, vectors_dict) where vectors_dict maps
+        event ID -> float vector for events that have stored embeddings.
+        Events without embeddings are still returned but absent from the dict.
+        """
+        import struct
+
+        terms = re.findall(r"\w+", query_text)
+        if not terms:
+            return [], {}
+        safe_query = " OR ".join(f"{t}*" for t in terms)
+        try:
+            rows = self._conn.execute(
+                """SELECT e.*, v.embedding
+                   FROM events_fts fts
+                   JOIN events e ON e.rowid = fts.rowid
+                   LEFT JOIN events_vec v ON e.rowid = v.id
+                   WHERE events_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (safe_query, k),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return [], {}
+
+        events: list[dict[str, Any]] = []
+        vectors: dict[str, list[float]] = {}
+        for row in rows:
+            event = dict(row)
+            raw_vec = event.pop("embedding", None)
+            events.append(event)
+            if raw_vec is not None:
+                n_floats = len(raw_vec) // 4
+                vectors[event["id"]] = list(struct.unpack(f"{n_floats}f", raw_vec))
+        return events, vectors
+
     def search_by_metadata(
         self,
         *,
