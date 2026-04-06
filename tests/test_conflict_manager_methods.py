@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from nanobot.memory.write.conflicts import ConflictManager
 
 
@@ -203,3 +205,142 @@ class TestApplyProfileUpdates:
             enable_contradiction_check=False,
         )
         assert added == 0
+
+
+def _empty_profile() -> dict:
+    """Return a minimal empty profile for testing."""
+    return {
+        "preferences": [],
+        "stable_facts": [],
+        "active_projects": [],
+        "relationships": [],
+        "constraints": [],
+        "conflicts": [],
+        "meta": {
+            "preferences": {},
+            "stable_facts": {},
+            "active_projects": {},
+            "relationships": {},
+            "constraints": {},
+        },
+    }
+
+
+class TestProfileEchoGuard:
+    """Profile belief confidence should not be bumped by assistant echo."""
+
+    def _make_mgr_with_store(self):
+        from nanobot.memory.persistence.profile_io import ProfileStore
+        from nanobot.memory.write.conflicts import ConflictManager
+
+        store = ProfileStore()
+        mgr = ConflictManager(store)
+        store._conflict_mgr = mgr
+        return mgr, store
+
+    def test_existing_belief_not_bumped_for_assistant_echo(self) -> None:
+        """source_role='assistant' should skip confidence bump for existing beliefs."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+        profile["preferences"] = ["likes coffee"]
+        # Seed the meta entry with known confidence.
+        entry = store._meta_entry(profile, "preferences", "likes coffee")
+        entry["confidence"] = 0.70
+
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes coffee"]},
+            enable_contradiction_check=False,
+            source_role="assistant",
+        )
+
+        updated = store._meta_entry(profile, "preferences", "likes coffee")
+        # Confidence should remain at 0.70 (no +0.03 bump).
+        assert updated["confidence"] == 0.70
+
+    def test_existing_belief_bumped_for_genuine_source(self) -> None:
+        """source_role='consolidation' should bump confidence normally."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+        profile["preferences"] = ["likes coffee"]
+        entry = store._meta_entry(profile, "preferences", "likes coffee")
+        entry["confidence"] = 0.70
+
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes coffee"]},
+            enable_contradiction_check=False,
+            source_role="consolidation",
+        )
+
+        updated = store._meta_entry(profile, "preferences", "likes coffee")
+        assert updated["confidence"] == pytest.approx(0.73)
+
+    def test_new_belief_not_boosted_for_assistant_echo(self) -> None:
+        """source_role='assistant' should skip the +0.1 boost for new beliefs."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes hiking"]},
+            enable_contradiction_check=False,
+            source_role="assistant",
+        )
+
+        entry = store._meta_entry(profile, "preferences", "likes hiking")
+        # Created at 0.65, no +0.1 boost for echo -> stays 0.65.
+        assert entry["confidence"] == 0.65
+
+    def test_new_belief_boosted_for_genuine_source(self) -> None:
+        """source_role='consolidation' should apply the +0.1 boost for new beliefs."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes hiking"]},
+            enable_contradiction_check=False,
+            source_role="consolidation",
+        )
+
+        entry = store._meta_entry(profile, "preferences", "likes hiking")
+        assert entry["confidence"] == pytest.approx(0.75)
+
+    def test_default_source_role_is_genuine(self) -> None:
+        """Empty source_role defaults to genuine (backward compat)."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+        profile["preferences"] = ["likes coffee"]
+        entry = store._meta_entry(profile, "preferences", "likes coffee")
+        entry["confidence"] = 0.70
+
+        # No source_role argument — should default to genuine behavior.
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes coffee"]},
+            enable_contradiction_check=False,
+        )
+
+        updated = store._meta_entry(profile, "preferences", "likes coffee")
+        assert updated["confidence"] == pytest.approx(0.73)
+
+    def test_last_seen_still_updated_for_echo(self) -> None:
+        """Even for echoes, last_seen_at should be updated."""
+        mgr, store = self._make_mgr_with_store()
+        profile = _empty_profile()
+        profile["preferences"] = ["likes coffee"]
+        store._meta_entry(profile, "preferences", "likes coffee")
+
+        mgr._apply_profile_updates(
+            profile,
+            {"preferences": ["likes coffee"]},
+            enable_contradiction_check=False,
+            source_role="assistant",
+        )
+
+        updated = store._meta_entry(profile, "preferences", "likes coffee")
+        # last_seen_at should be updated (or at least present).
+        assert updated.get("last_seen_at")
+        # Confidence should NOT have changed.
+        assert updated["confidence"] == 0.65
