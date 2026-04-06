@@ -77,6 +77,9 @@ class EventCoercer:
         if not isinstance(ttl_days, int) or ttl_days <= 0:
             ttl_days = None
         source = str(raw.get("source", "chat")).strip().lower() or "chat"
+        source_role = str(raw.get("source_role", "")).strip().lower()
+        if source_role not in {"user", "assistant", "tool", "consolidation"}:
+            source_role = ""
         status = self.infer_episodic_status(
             event_type=event_type,
             summary=summary.strip(),
@@ -132,6 +135,7 @@ class EventCoercer:
                 ),
                 "stability": metadata.get("stability", "medium"),
                 "source": metadata.get("source", source),
+                "source_role": source_role,
                 "evidence_refs": metadata.get("evidence_refs", []),
                 "status": status,
                 "metadata": metadata,

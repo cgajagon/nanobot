@@ -296,3 +296,37 @@ class TestAliasRegistryInSimilarity:
         lexical, _ = d.event_similarity(a, b)
         # With alias resolution, "carlos" and "user" both become "_user_"
         assert lexical >= 0.9
+
+
+class TestSourceRolePreservation:
+    def test_coercion_preserves_source_role(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "source_role": "user",
+        }
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == "user"
+
+    def test_coercion_defaults_source_role_empty(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {"type": "fact", "summary": "User uses Python"}
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == ""
+
+    def test_coercion_rejects_invalid_source_role(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "source_role": "bogus_value",
+        }
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == ""

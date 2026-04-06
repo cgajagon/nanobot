@@ -224,6 +224,7 @@ class ConsolidationPipeline:
                     ]
                 event = self._extractor.coerce_event(item, source_span=source_span)
                 if event:
+                    event.source_role = "consolidation"
                     events.append(event)
                 if len(events) >= 40:
                     break
@@ -241,6 +242,8 @@ class ConsolidationPipeline:
             events, profile_updates = self._extractor.heuristic_extract_events(
                 old_messages, source_start=source_start
             )
+            for event in events:
+                event.source_role = "consolidation"
 
         # -- Apply results (same as two-call path) --
         embeddings = await self._compute_embeddings(events)
