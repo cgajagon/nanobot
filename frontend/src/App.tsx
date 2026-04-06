@@ -226,14 +226,15 @@ async function readStatusEvents(
 /**
  * Syncs the current thread's remoteId to the history adapter.
  *
- * Reads remoteId from the thread list item state (provided by
- * useRemoteThreadListRuntime) and writes it to the history adapter's
- * mutable variable so load() can read it.
+ * Must be called inside the runtimeHook (which runs per-thread) so that
+ * _currentThreadRemoteId is updated synchronously BEFORE the history
+ * adapter's load() fires. Previously this was a separate component whose
+ * render could lag behind the thread switch, causing load() to fetch the
+ * previous thread's messages.
  */
-function ThreadRemoteIdSync(): null {
+function useThreadRemoteIdSync(): void {
   const threadListItem = useThreadListItem({ optional: true });
   setCurrentThreadRemoteId(threadListItem?.remoteId);
-  return null;
 }
 
 export default function App() {
@@ -241,9 +242,13 @@ export default function App() {
   const [agentStatus, setAgentStatus] = useState("");
 
   const runtime = useRemoteThreadListRuntime({
-    runtimeHook: () =>
+    runtimeHook: () => {
+      // Sync remoteId before useDataStreamRuntime creates the runtime, so that
+      // the history adapter's load() reads the correct thread's remoteId.
       // eslint-disable-next-line react-hooks/rules-of-hooks
-      useDataStreamRuntime({
+      useThreadRemoteIdSync();
+      // eslint-disable-next-line react-hooks/rules-of-hooks
+      return useDataStreamRuntime({
         api: "/api/chat",
         protocol: "ui-message-stream",
         /** Inject the current thread's remoteId so the server routes to the correct session. */
@@ -264,13 +269,13 @@ export default function App() {
           ]),
           history: serverHistoryAdapter,
         },
-      }),
+      });
+    },
     adapter: threadListAdapter,
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadRemoteIdSync />
       <div className="flex h-screen w-full bg-background">
         <div className="hidden md:block">
           <Sidebar collapsed={sidebarCollapsed} />

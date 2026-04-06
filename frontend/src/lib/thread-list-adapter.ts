@@ -42,6 +42,9 @@ export const threadListAdapter: RemoteThreadListAdapter = {
   },
 
   async initialize(_threadId: string) {
+    // Clear immediately so that if load() fires before the POST completes,
+    // it returns empty messages instead of the previous thread's messages.
+    setCurrentThreadRemoteId(undefined);
     const response = await fetch("/api/threads", { method: "POST" });
     const data = await response.json();
     const remoteId = data.threadId as string;
