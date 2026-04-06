@@ -78,6 +78,20 @@ class TestAliasRegistry:
         registry.register("carlos", "user", confidence=1.0, source="config")
         assert registry.resolve("carlos") == "user"  # now registered
 
+    def test_register_empty_alias_is_noop(self) -> None:
+        store = AliasStore(_make_conn())
+        registry = AliasRegistry(store)
+        registry.load()
+        registry.register("", "canonical", confidence=1.0, source="config")
+        assert registry.resolve("") == ""
+
+    def test_register_whitespace_alias_is_noop(self) -> None:
+        store = AliasStore(_make_conn())
+        registry = AliasRegistry(store)
+        registry.load()
+        registry.register("   ", "canonical", confidence=1.0, source="config")
+        assert store.load_all() == {}
+
     def test_load_populates_from_store(self) -> None:
         store = AliasStore(_make_conn())
         store.register("pg", "postgresql", confidence=0.9, source="linker")

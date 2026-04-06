@@ -59,6 +59,27 @@ class TestCollectGraphEntityNames:
             result = aug.collect_graph_entity_names("query", events)
         assert "bob" in result
 
+    def test_returns_last_seen_timestamps(self) -> None:
+        """collect_graph_entity_names returns dict with last_seen from entity rows."""
+        aug = _make_augmenter()
+        aug._graph.get_entity_row = MagicMock(
+            side_effect=lambda name: (
+                {"last_seen": "2026-04-01T00:00:00Z"} if name == "bob" else {"last_seen": ""}
+            )
+        )
+        with patch(_EXTRACT_ENTITIES_PATH, return_value=["Alice"]):
+            events = [
+                {
+                    "triples": [
+                        {"subject": "Alice", "predicate": "knows", "object": "Bob"},
+                    ]
+                }
+            ]
+            result = aug.collect_graph_entity_names("query", events)
+        assert isinstance(result, dict)
+        assert "bob" in result
+        assert result["bob"] == "2026-04-01T00:00:00Z"
+
     def test_augments_with_graph_neighbors(self) -> None:
         aug = _make_augmenter()
         aug._graph.get_related_entity_names_sync.return_value = {"python", "fastapi"}
