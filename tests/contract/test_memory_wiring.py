@@ -120,6 +120,17 @@ def test_source_role_in_micro_extract_schema() -> None:
     assert "assistant" in props["source_role"]["enum"]
 
 
+def test_stability_half_life_constants_defined():
+    """_STABILITY_HALF_LIFE has entries for all three stability levels."""
+    from nanobot.memory.read.scoring import _STABILITY_HALF_LIFE
+
+    assert "high" in _STABILITY_HALF_LIFE
+    assert "medium" in _STABILITY_HALF_LIFE
+    assert "low" in _STABILITY_HALF_LIFE
+    assert _STABILITY_HALF_LIFE["high"] > _STABILITY_HALF_LIFE["medium"]
+    assert _STABILITY_HALF_LIFE["medium"] > _STABILITY_HALF_LIFE["low"]
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod
