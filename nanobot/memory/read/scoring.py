@@ -355,7 +355,9 @@ class RetrievalScorer:
 
             if use_recency:
                 recency_ts = str(item.get("last_confirmed") or item.get("timestamp", ""))
-                half_life = _STABILITY_HALF_LIFE.get(stability, 90.0)
+                half_life = _STABILITY_HALF_LIFE.get(
+                    stability, float(policy.get("half_life_days", 90.0))
+                )
                 recency = RetrievalPlanner.recency_signal(recency_ts, half_life_days=half_life)
             else:
                 recency = 0.0
