@@ -782,7 +782,6 @@ class TestHybridMemoryStore:
                         "salience": 0.7,
                         "confidence": 0.8,
                         "source_span": [2, 3],
-                        "ttl_days": 365,
                     }
                 ),
                 MemoryEvent.from_dict(
@@ -797,7 +796,6 @@ class TestHybridMemoryStore:
                         "salience": 0.7,
                         "confidence": 0.8,
                         "source_span": [4, 5],
-                        "ttl_days": 365,
                     }
                 ),
             ]
