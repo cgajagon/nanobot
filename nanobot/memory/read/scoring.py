@@ -42,6 +42,12 @@ _STABILITY_BOOST: dict[str, float] = {
     "low": -0.02,
 }
 
+_STABILITY_HALF_LIFE: dict[str, float] = {
+    "high": 365.0,
+    "medium": 90.0,
+    "low": 14.0,
+}
+
 
 def _contains_norm_phrase(text: str, phrase_norm: str) -> bool:
     if not phrase_norm:
@@ -348,10 +354,11 @@ class RetrievalScorer:
             reflection_penalty = -0.06 if (use_recency and memory_type == "reflection") else 0.0
 
             if use_recency:
-                recency = RetrievalPlanner.recency_signal(
-                    str(item.get("timestamp", "")),
-                    half_life_days=float(policy.get("half_life_days", 60.0)),
+                recency_ts = str(item.get("last_confirmed") or item.get("timestamp", ""))
+                half_life = _STABILITY_HALF_LIFE.get(
+                    stability, float(policy.get("half_life_days", 90.0))
                 )
+                recency = RetrievalPlanner.recency_signal(recency_ts, half_life_days=half_life)
             else:
                 recency = 0.0
 

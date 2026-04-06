@@ -2,7 +2,7 @@
 
 > Living document. Governs the memory subsystem design, patterns, and constraints.
 > Companion to `cognitive-architecture.md` (agent core) and `architecture.md` (system-wide).
-> Last updated: 2026-04-01.
+> Last updated: 2026-04-06.
 
 ---
 
@@ -397,7 +397,8 @@ Three-level dedup in `append_events()`, evaluated in order:
 
 **Merge behavior:** Entities unioned, confidence averaged + 0.03 boost, salience takes
 max, evidence capped at 20, source spans merged, timestamp uses newer,
-`merged_event_count` incremented.
+`merged_event_count` incremented. `last_confirmed` bumped only for genuine sources
+(`source_role` != `"assistant"`) — echo restatements preserve existing `last_confirmed`.
 
 ### Micro-Extraction Differences
 
@@ -462,6 +463,7 @@ Query text
 │  Stage 6: FILTER                                     │
 │  Intent-specific: routing hints, status constraints,  │
 │  type restrictions, reflection safety                │
+│  + TTL expiry filter (events past ttl_days excluded)  │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
@@ -469,7 +471,7 @@ Query text
 │  score = RRF base_score                               │
 │         + profile_adjustment (±0.20 max)             │
 │         + type_boost (per intent, ±0.30)             │
-│         + 0.15 × recency (half-life decay)           │
+│         + 0.15 × recency (stability-aware half-life) │
 │         + stability_boost (+0.03 / +0.01 / -0.02)   │
 │         + reflection_penalty (-0.06)                 │
 │         + graph_entity_boost (+0.15)                 │

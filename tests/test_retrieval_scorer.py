@@ -227,6 +227,123 @@ class TestRerankItems:
         assert result == []
 
 
+class TestStabilityAwareDecay:
+    def test_high_stability_slower_decay(self) -> None:
+        """High stability fact should decay slower than medium."""
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        old_ts = "2025-01-01T00:00:00Z"
+        items_high = [
+            {
+                "id": "h1",
+                "type": "preference",
+                "summary": "Prefers dark mode",
+                "memory_type": "semantic",
+                "timestamp": old_ts,
+                "score": 0.5,
+                "stability": "high",
+                "entities": [],
+            }
+        ]
+        items_low = [
+            {
+                "id": "l1",
+                "type": "task",
+                "summary": "Deploy by Friday",
+                "memory_type": "episodic",
+                "timestamp": old_ts,
+                "score": 0.5,
+                "stability": "low",
+                "entities": [],
+            }
+        ]
+        scored_high = scorer.score_items(
+            items_high,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        scored_low = scorer.score_items(
+            items_low,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        # High stability should have higher final score due to slower decay
+        assert scored_high[0]["score"] > scored_low[0]["score"]
+
+    def test_recency_uses_last_confirmed_over_timestamp(self) -> None:
+        """last_confirmed should take precedence over timestamp for recency."""
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        from datetime import datetime, timedelta, timezone
+
+        recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        old = "2024-01-01T00:00:00Z"
+
+        items_confirmed = [
+            {
+                "id": "c1",
+                "type": "fact",
+                "summary": "Old but confirmed",
+                "memory_type": "semantic",
+                "timestamp": old,
+                "last_confirmed": recent,
+                "score": 0.5,
+                "stability": "medium",
+                "entities": [],
+            }
+        ]
+        items_stale = [
+            {
+                "id": "s1",
+                "type": "fact",
+                "summary": "Old and stale",
+                "memory_type": "semantic",
+                "timestamp": old,
+                "score": 0.5,
+                "stability": "medium",
+                "entities": [],
+            }
+        ]
+        scored_confirmed = scorer.score_items(
+            items_confirmed,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        scored_stale = scorer.score_items(
+            items_stale,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        # Confirmed recently should score higher
+        assert scored_confirmed[0]["score"] > scored_stale[0]["score"]
+
+
 class TestRecencyBoostMagnitude:
     """Recency boost should meaningfully influence final scores."""
 

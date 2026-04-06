@@ -296,3 +296,107 @@ class TestAliasRegistryInSimilarity:
         lexical, _ = d.event_similarity(a, b)
         # With alias resolution, "carlos" and "user" both become "_user_"
         assert lexical >= 0.9
+
+
+class TestSourceRolePreservation:
+    def test_coercion_preserves_source_role(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "source_role": "user",
+        }
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == "user"
+
+    def test_coercion_defaults_source_role_empty(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {"type": "fact", "summary": "User uses Python"}
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == ""
+
+    def test_coercion_rejects_invalid_source_role(self) -> None:
+        classifier = EventClassifier()
+        coercer = EventCoercer(classifier)
+        raw = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "source_role": "bogus_value",
+        }
+        event = coercer.coerce_event(raw, source_span=[0, 1])
+        assert event is not None
+        assert event.source_role == ""
+
+
+class TestLastConfirmedInMerge:
+    def test_merge_bumps_last_confirmed_for_user_source(self) -> None:
+        d = _make_dedup()
+        base = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "last_confirmed": "2025-01-01T00:00:00Z",
+        }
+        incoming = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "source_role": "user",
+        }
+        merged = d.merge_events(base, incoming, similarity=0.9)
+        assert merged["last_confirmed"] > "2025-01-01T00:00:00Z"
+
+    def test_merge_skips_last_confirmed_for_assistant_echo(self) -> None:
+        d = _make_dedup()
+        base = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "last_confirmed": "2025-06-01T00:00:00Z",
+        }
+        incoming = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "source_role": "assistant",
+        }
+        merged = d.merge_events(base, incoming, similarity=0.9)
+        assert merged["last_confirmed"] == "2025-06-01T00:00:00Z"
+
+    def test_merge_bumps_last_confirmed_for_consolidation(self) -> None:
+        d = _make_dedup()
+        base = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "last_confirmed": "2025-01-01T00:00:00Z",
+        }
+        incoming = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "source_role": "consolidation",
+        }
+        merged = d.merge_events(base, incoming, similarity=0.9)
+        assert merged["last_confirmed"] > "2025-01-01T00:00:00Z"
+
+    def test_merge_default_empty_source_role_is_genuine(self) -> None:
+        d = _make_dedup()
+        base = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "last_confirmed": "2025-01-01T00:00:00Z",
+        }
+        incoming = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "source_role": "",
+        }
+        merged = d.merge_events(base, incoming, similarity=0.9)
+        assert merged["last_confirmed"] > "2025-01-01T00:00:00Z"

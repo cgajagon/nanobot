@@ -260,7 +260,7 @@ No new files created. No package growth.
 | LLM misclassifies source_role | Default to "user" (genuine) — conservative. Misclassifying user as assistant only delays last_confirmed, doesn't corrupt data |
 | TTL too aggressive (useful facts expire) | TTL only set by LLM extraction; most facts have no TTL. TTL uses last_confirmed so re-observed facts reset the clock |
 | Stability half-life values wrong | Start with 365/90/14. These are constants in scoring.py, easy to tune. The research recommends these as starting points |
-| Migration fails on existing databases | ALTER TABLE ADD COLUMN is metadata-only in SQLite. Catch OperationalError for idempotency |
+| Migration fails on existing databases | N/A — using `_extra` overflow, no schema migration needed |
 
 ## Open decisions
 
@@ -269,3 +269,17 @@ No new files created. No package growth.
 2. **Should `last_confirmed` apply to profile beliefs too?** Profile beliefs already
    have `last_seen_at` which serves a similar purpose. Keeping them separate for now —
    aligning could be a future iteration.
+
+## Deviations
+
+1. **No ALTER TABLE migration for `last_confirmed`** — the spec proposed a dedicated
+   column via ALTER TABLE. During code review, this was identified as inconsistent with
+   Pattern 2 (Fixed-Column Schema with Overflow) from memory-architecture.md. The
+   `last_confirmed` field is stored in `metadata._extra` JSON instead, matching how all
+   other non-core MemoryEvent fields are persisted. The retrieval pipeline's
+   `_enrich_item_metadata()` unpacks `_extra` to top-level dict keys before scoring,
+   so the field is available to the TTL filter and scorer without a dedicated column.
+2. **Default half-life fallback is 90.0, not 60.0** — the original scorer used 60.0 as
+   the hardcoded default for `policy.get("half_life_days")`. The new fallback uses
+   `policy.get("half_life_days", 90.0)` to align with `_STABILITY_HALF_LIFE["medium"]`
+   so that unknown stability defaults to medium treatment consistently.

@@ -99,6 +99,39 @@ def test_alias_store_property(tmp_path: Path) -> None:
     assert store.db.alias_store is alias_store
 
 
+def test_last_confirmed_field_on_memory_event() -> None:
+    """MemoryEvent has last_confirmed and source_role fields (stored in _extra overflow)."""
+    from nanobot.memory.event import MemoryEvent
+
+    event = MemoryEvent(summary="test", last_confirmed="2025-01-01T00:00:00Z", source_role="user")
+    assert event.last_confirmed == "2025-01-01T00:00:00Z"
+    assert event.source_role == "user"
+
+
+def test_source_role_in_micro_extract_schema() -> None:
+    """_MICRO_EXTRACT_TOOL schema includes source_role field."""
+    from nanobot.memory.write.micro_extractor import _MICRO_EXTRACT_TOOL
+
+    props = _MICRO_EXTRACT_TOOL[0]["function"]["parameters"]["properties"]["events"]["items"][
+        "properties"
+    ]
+    assert "source_role" in props
+    assert props["source_role"]["type"] == "string"
+    assert "user" in props["source_role"]["enum"]
+    assert "assistant" in props["source_role"]["enum"]
+
+
+def test_stability_half_life_constants_defined():
+    """_STABILITY_HALF_LIFE has entries for all three stability levels."""
+    from nanobot.memory.read.scoring import _STABILITY_HALF_LIFE
+
+    assert "high" in _STABILITY_HALF_LIFE
+    assert "medium" in _STABILITY_HALF_LIFE
+    assert "low" in _STABILITY_HALF_LIFE
+    assert _STABILITY_HALF_LIFE["high"] > _STABILITY_HALF_LIFE["medium"]
+    assert _STABILITY_HALF_LIFE["medium"] > _STABILITY_HALF_LIFE["low"]
+
+
 def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
     """When ONNX reranker reports unavailable, store uses CompositeReranker."""
     import nanobot.memory.ranking.onnx_reranker as onnx_mod
