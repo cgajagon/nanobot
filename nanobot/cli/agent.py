@@ -161,8 +161,7 @@ def agent(
 
     from nanobot.agent.agent_factory import build_agent
     from nanobot.bus.queue import MessageBus
-    from nanobot.config.loader import get_data_dir, load_config
-    from nanobot.cron.service import CronService
+    from nanobot.config.loader import load_config
 
     config = load_config()
 
@@ -174,10 +173,6 @@ def agent(
 
     bus = MessageBus()
     provider = _make_provider(config)
-
-    # Create cron service for tool usage (no callback needed for CLI unless running)
-    cron_store_path = get_data_dir() / "cron" / "jobs.json"
-    cron = CronService(cron_store_path)
 
     if logs:
         logger.enable("nanobot")
@@ -193,7 +188,6 @@ def agent(
         config=_make_agent_config(config),
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
-        cron_service=cron,
         mcp_servers=config.tools.mcp_servers,
         channels_config=config.channels,
         routing_config=config.agents.routing,
