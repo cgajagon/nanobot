@@ -68,6 +68,12 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+html,
+body {
+  overflow: hidden;
+  height: 100%;
+}
+
 body {
   margin: 0;
   font-family:
@@ -82,4 +88,3 @@ body {
   display: flex;
   flex-direction: column;
 }
-
