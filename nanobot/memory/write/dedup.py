@@ -250,6 +250,18 @@ class EventDeduplicator:
         merged["salience"] = min(max(max(c_sal, i_sal), 0.0), 1.0)
         merged["merged_event_count"] = merged_count
         merged["last_merged_at"] = _utc_now_iso()
+
+        # Temporal confirmation: bump last_confirmed only for genuine sources
+        incoming_source_role = str(candidate.get("source_role", "")).strip().lower()
+        if incoming_source_role == "assistant":
+            # Echo — preserve existing last_confirmed, don't bump
+            merged["last_confirmed"] = str(
+                canonical.get("last_confirmed") or canonical.get("timestamp", "")
+            )
+        else:
+            # Genuine re-observation (user, tool, consolidation, or unknown)
+            merged["last_confirmed"] = _utc_now_iso()
+
         merged["last_dedup_score"] = round(similarity, 4)
         merged["canonical_id"] = str(canonical.get("canonical_id") or canonical.get("id", ""))
         merged_status = self._coercer.infer_episodic_status(
