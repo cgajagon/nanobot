@@ -77,6 +77,11 @@ class CronService:
         self._timer_task: asyncio.Task | None = None
         self._running = False
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the cron service has been started and is scheduling jobs."""
+        return self._running
+
     def _load_store(self) -> CronStore:
         """Load jobs from disk."""
         if self._store:
