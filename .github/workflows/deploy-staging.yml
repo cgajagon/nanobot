@@ -59,11 +59,23 @@ jobs:
           fi
           echo "Staging deployment verified — health check passed"
 
-      - name: Report failure
+      - name: Dump diagnostics on failure
         if: failure()
         run: |
-          echo "::error::Staging deployment failed. Check container logs:"
-          echo "  docker compose -p nanobot-staging -f deploy/staging/docker-compose.yml logs --tail 50"
+          echo "::error::Staging deployment failed — dumping diagnostics"
+          echo ""
+          echo "=== Container status ==="
+          docker ps -a --filter name=nanobot-staging --format "table {{.ID}}\t{{.Status}}\t{{.Ports}}" || true
+          echo ""
+          echo "=== Container logs (last 80 lines) ==="
+          docker compose -p nanobot-staging -f deploy/staging/docker-compose.yml logs --tail 80 --no-color 2>&1 || true
+          echo ""
+          echo "=== Port 18791 listeners ==="
+          ss -tlnp sport = :18791 2>/dev/null || netstat -tlnp 2>/dev/null | grep 18791 || true
+          echo ""
+          echo "=== Disk and memory ==="
+          df -h / | tail -1 || true
+          free -m | head -3 || true
 
   notify-skipped:
     name: Notify skipped deploy
