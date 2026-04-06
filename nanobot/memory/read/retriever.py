@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from nanobot.observability.langfuse import retriever_span
 from nanobot.observability.tracing import bind_trace
 
+from .._text import _to_datetime
 from .graph_augmentation import GraphAugmenter
 from .retrieval_planner import RetrievalPlanner
 from .retrieval_types import RetrievedMemory, retrieved_memory_from_dict
@@ -26,6 +28,31 @@ from .scoring import RetrievalScorer
 if TYPE_CHECKING:
     from ..db.event_store import EventStore
     from ..embedder import Embedder
+
+
+def filter_expired(items: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """Exclude events whose TTL has expired.
+
+    Uses ``last_confirmed`` (if available) or ``timestamp`` for age calculation.
+    Events without ``ttl_days`` or with invalid TTL always pass through.
+    """
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        ttl = item.get("ttl_days")
+        if not isinstance(ttl, int) or ttl <= 0:
+            filtered.append(item)
+            continue
+        ts_str = str(item.get("last_confirmed") or item.get("timestamp", ""))
+        ts = _to_datetime(ts_str)
+        if ts is None:
+            filtered.append(item)
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=now.tzinfo)
+        age_days = (now - ts).total_seconds() / 86400.0
+        if age_days <= ttl:
+            filtered.append(item)
+    return filtered
 
 
 class MemoryRetriever:
@@ -153,6 +180,9 @@ class MemoryRetriever:
 
         # 5. Filter
         filtered, _filter_counts = self._scorer.filter_items(candidates, plan)
+
+        # 5b. TTL expiry filter
+        filtered = filter_expired(filtered, datetime.now(timezone.utc))
 
         # 6. Score
         profile_data = self._scorer.load_profile_scoring_data()
