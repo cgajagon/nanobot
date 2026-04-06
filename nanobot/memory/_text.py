@@ -7,6 +7,7 @@ Pure functions shared across memory subpackages.  Renamed from ``helpers.py``
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 
@@ -62,6 +63,40 @@ def _to_datetime(value: str | None) -> datetime | None:
 def _norm_text(value: str) -> str:
     """Lowercase, strip, and collapse whitespace."""
     return re.sub(r"\s+", " ", value.strip().lower())
+
+
+# ---------------------------------------------------------------------------
+# Entity name normalisation
+# ---------------------------------------------------------------------------
+
+# Regex for possessive suffixes (straight and smart quotes)
+_POSSESSIVE_RE = re.compile(r"['\u2018\u2019]s$", re.IGNORECASE)
+
+# Titles stripped only at start of name
+_TITLE_RE = re.compile(r"^(?:dr|mr|mrs|ms|prof)\.?\s+", re.IGNORECASE)
+
+# Punctuation to strip (keep Unicode word chars, spaces, hyphens)
+_ENTITY_PUNCT_RE = re.compile(r"[^\w\s-]", re.UNICODE)
+
+
+def normalize_entity_name(name: str) -> str:
+    """Normalize an entity name to its canonical form.
+
+    Pipeline: NFKC -> strip -> strip possessives -> strip titles ->
+    strip punctuation (preserve hyphens/underscores) -> lowercase ->
+    collapse whitespace -> spaces to underscores.
+    """
+    if not name or not name.strip():
+        return ""
+    text = unicodedata.normalize("NFKC", name)
+    text = text.strip()
+    text = _POSSESSIVE_RE.sub("", text)
+    text = _TITLE_RE.sub("", text)
+    text = _ENTITY_PUNCT_RE.sub("", text)
+    text = text.lower().strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace(" ", "_")
+    return text
 
 
 def _tokenize(value: str) -> set[str]:

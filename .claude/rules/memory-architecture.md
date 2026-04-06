@@ -51,10 +51,10 @@ snapshots, and history. The rest of the system interacts with it only through th
 │         │                 │                    │              │
 │  ┌──────▼─────────────────▼────────────────────▼──────────┐  │
 │  │              STORAGE LAYER (shared SQLite)              │  │
-│  │  MemoryDatabase -> EventStore, GraphStore               │  │
-│  │  9 tables: events, events_fts, events_vec, profile,     │  │
+│  │  MemoryDatabase -> EventStore, GraphStore, AliasStore    │  │
+│  │  10 tables: events, events_fts, events_vec, profile,    │  │
 │  │            history, snapshots, entities, edges,          │  │
-│  │            strategies                                    │  │
+│  │            strategies, alias_registry                    │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────┐  │
@@ -73,7 +73,7 @@ snapshots, and history. The rest of the system interacts with it only through th
 | Package | Concern | Key Classes |
 |---------|---------|-------------|
 | `memory/` | Facade, data models, consolidation | `MemoryStore`, `MemoryEvent`, `ConsolidationPipeline`, `Strategy`, `StrategyAccess`, `StrategyExtractor` |
-| `memory/db/` | SQLite storage (connection, events, graph) | `MemoryDatabase`, `EventStore`, `GraphStore` |
+| `memory/db/` | SQLite storage (connection, events, graph, aliases) | `MemoryDatabase`, `EventStore`, `GraphStore`, `AliasStore`, `AliasRegistry` |
 | `memory/write/` | Ingestion pipeline | `MemoryExtractor`, `MicroExtractor`, `EventIngester`, `EventCoercer`, `EventDeduplicator`, `EventClassifier`, `ConflictManager` |
 | `memory/read/` | Retrieval pipeline | `MemoryRetriever`, `RetrievalPlanner`, `RetrievalScorer`, `ContextAssembler`, `GraphAugmenter` |
 | `memory/ranking/` | Reranking | `Reranker` (protocol), `CompositeReranker`, `OnnxCrossEncoderReranker` |
@@ -663,7 +663,7 @@ order (simplified):
 
 ```
 1.  Embedder (OpenAI > Local > Hash, with fallback)
-2.  MemoryDatabase (SQLite, creates all 9 tables)
+2.  MemoryDatabase (SQLite, creates all 10 tables)
 3.  EventClassifier
 4.  EventCoercer (depends on: 3)
 5.  MemoryExtractor (depends on: 4)
@@ -800,9 +800,13 @@ checks — the 86MB `all-MiniLM-L6-v2` model loads correctly on all onnxruntime 
 near-duplicates with entity name mismatches (e.g., "User's project" vs "Carlos's
 project", Jaccard = 0.714).
 
-**Resolved:** Entity name normalization via `user_aliases` config field. Configurable
-aliases are normalized to a canonical token before Jaccard computation, ensuring events
-referencing the same user by different names are detected as duplicates.
+**Resolved:** Entity name normalization via unified `AliasRegistry` (`memory/db/alias_store.py`).
+Replaces the old `user_aliases` frozenset approach. The registry is seeded from three
+sources at startup: config `user_aliases` (confidence 1.0), static `entity_linker.py`
+aliases (confidence 0.9), and existing graph entity aliases (confidence 0.8). All entity
+names are normalized via `normalize_entity_name()` in `_text.py` (NFKC, possessive
+stripping, title stripping, punctuation removal). The registry serves both dedup
+similarity computation and graph entity resolution.
 
 **Resolved:** Semantic similarity stub (`semantic = lexical`) replaced with real
 embedding cosine similarity via the `Embedder` protocol. Falls back to lexical when

@@ -10,11 +10,13 @@ without touching scoring logic.
 
 from __future__ import annotations
 
+from nanobot.memory._text import normalize_entity_name
+
 # ---------------------------------------------------------------------------
 # Alias map — shorthand → canonical name
 # ---------------------------------------------------------------------------
 
-_ALIAS_MAP: dict[str, str] = {
+ALIAS_MAP: dict[str, str] = {
     # Databases
     "pg": "postgresql",
     "postgres": "postgresql",
@@ -29,7 +31,7 @@ _ALIAS_MAP: dict[str, str] = {
     "py": "python",
     "python3": "python",
     "gh": "github",
-    "gh actions": "github actions",
+    "gh_actions": "github actions",
     # Environments
     "prod": "production",
     "dev": "development",
@@ -43,4 +45,5 @@ def resolve_alias(name: str) -> str:
 
     Returns the original name (stripped) if no alias is registered.
     """
-    return _ALIAS_MAP.get(name.strip().lower(), name.strip())
+    key = normalize_entity_name(name)
+    return ALIAS_MAP.get(key, name.strip())

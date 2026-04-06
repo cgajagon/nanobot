@@ -233,7 +233,8 @@ memory/
 ├── db/                       # Storage layer (shared SQLite connection)
 │   ├── connection.py         # MemoryDatabase — connection + profile/history/snapshot
 │   ├── event_store.py        # EventStore — events + FTS5 + vector search
-│   └── graph_store.py        # GraphStore — entities + edges + BFS traversal
+│   ├── graph_store.py        # GraphStore — entities + edges + BFS traversal
+│   └── alias_store.py        # AliasStore + AliasRegistry — unified entity alias resolution
 ├── embedder.py               # Embedding protocol + implementations
 ├── event.py                  # MemoryEvent model
 ├── write/                    # Ingestion pipeline

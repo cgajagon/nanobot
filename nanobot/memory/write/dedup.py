@@ -8,11 +8,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
-from .._text import _norm_text, _safe_float, _to_datetime, _to_str_list, _tokenize, _utc_now_iso
+from .._text import (
+    _norm_text,
+    _safe_float,
+    _to_datetime,
+    _to_str_list,
+    _tokenize,
+    _utc_now_iso,
+    normalize_entity_name,
+)
 from ..constants import EPISODIC_STATUS_OPEN, EPISODIC_STATUS_RESOLVED
 from ..event import memory_type_for_item
 
 if TYPE_CHECKING:
+    from ..db.alias_store import AliasRegistry
     from ..embedder import Embedder
     from .coercion import EventCoercer
 
@@ -24,13 +33,13 @@ class EventDeduplicator:
         self,
         coercer: EventCoercer,
         conflict_pair_fn: Callable[[str, str], bool] | None = None,
-        user_aliases: frozenset[str] | None = None,
         embedder: Embedder | None = None,
+        alias_registry: AliasRegistry | None = None,
     ) -> None:
         self._coercer = coercer
         self._conflict_pair_fn = conflict_pair_fn
-        self._user_aliases = user_aliases or frozenset()
         self._embedder = embedder
+        self._alias_registry = alias_registry
 
     def _sync_embed(self, texts: list[str]) -> list[list[float]] | None:
         """Embed texts synchronously. Returns None on any failure.
@@ -59,7 +68,8 @@ class EventDeduplicator:
 
         def _event_text(event: dict[str, Any]) -> str:
             summary = str(event.get("summary", ""))
-            entities = " ".join(_to_str_list(event.get("entities")))
+            raw_entities = _to_str_list(event.get("entities"))
+            entities = " ".join(normalize_entity_name(e) for e in raw_entities)
             event_type = str(event.get("type", "fact"))
             return f"{event_type}. {summary}. {entities}".strip()
 
@@ -69,11 +79,10 @@ class EventDeduplicator:
         left_tokens = _tokenize(left_text)
         right_tokens = _tokenize(right_text)
 
-        # Normalize user aliases to a canonical token
-        if self._user_aliases:
-            canonical = "_user_"
-            left_tokens = {canonical if t in self._user_aliases else t for t in left_tokens}
-            right_tokens = {canonical if t in self._user_aliases else t for t in right_tokens}
+        # Normalize aliases to canonical tokens via registry
+        if self._alias_registry:
+            left_tokens = {self._alias_registry.resolve(t) for t in left_tokens}
+            right_tokens = {self._alias_registry.resolve(t) for t in right_tokens}
 
         overlap = left_tokens & right_tokens
         union = left_tokens | right_tokens
@@ -106,8 +115,12 @@ class EventDeduplicator:
             if str(existing.get("type", "")) != candidate_type:
                 continue
             lexical, semantic = self.event_similarity(candidate, existing)
-            candidate_entities = {_norm_text(x) for x in _to_str_list(candidate.get("entities"))}
-            existing_entities = {_norm_text(x) for x in _to_str_list(existing.get("entities"))}
+            candidate_entities = {
+                normalize_entity_name(x) for x in _to_str_list(candidate.get("entities"))
+            }
+            existing_entities = {
+                normalize_entity_name(x) for x in _to_str_list(existing.get("entities"))
+            }
             entity_overlap = 0.0
             if candidate_entities and existing_entities:
                 entity_overlap = len(candidate_entities & existing_entities) / max(

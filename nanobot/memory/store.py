@@ -21,11 +21,13 @@ from loguru import logger
 
 from nanobot.config.memory import MemoryConfig
 
-from ._text import _norm_text, _to_str_list, _utc_now_iso
+from ._text import _to_str_list, _utc_now_iso, normalize_entity_name
 from .consolidation_pipeline import ConsolidationPipeline
 from .constants import PROFILE_KEYS
 from .db import MemoryDatabase
+from .db.alias_store import AliasRegistry
 from .embedder import HashEmbedder, LocalEmbedder, OpenAIEmbedder
+from .graph.entity_linker import ALIAS_MAP
 from .graph.graph import KnowledgeGraph
 from .maintenance import MemoryMaintenance
 from .persistence.profile_io import ProfileStore
@@ -159,19 +161,23 @@ class MemoryStore:
             else:
                 logger.warning("ONNX reranker unavailable, using composite fallback")
 
+        # Unified alias registry — single source of truth for entity aliases.
+        self.alias_registry = AliasRegistry(self.db.alias_store)
+        self._seed_alias_registry()
+        self.alias_registry.load()
+
         # Knowledge graph (SQLite-backed via GraphStore).
         graph_enabled = self._memory_config.graph_enabled
         if graph_enabled:
-            self.graph = KnowledgeGraph(db=self.db.graph_store)
+            self.graph = KnowledgeGraph(db=self.db.graph_store, alias_registry=self.alias_registry)
         else:
             self.graph = KnowledgeGraph()  # disabled — all methods return empty
 
         # EventDeduplicator + EventIngester: own the full event write path.
-        aliases = frozenset(_norm_text(a) for a in self._memory_config.user_aliases)
         self._dedup = EventDeduplicator(
             coercer=self._coercer,
             conflict_pair_fn=self.profile_mgr._conflict_pair,
-            user_aliases=aliases if aliases else None,
+            alias_registry=self.alias_registry,
             embedder=self._embedder,
         )
         self.ingester = EventIngester(
@@ -262,6 +268,48 @@ class MemoryStore:
             db=self.db,
             embedder=self._embedder,
         )
+
+    # ------------------------------------------------------------------
+    # Alias registry seeding
+    # ------------------------------------------------------------------
+
+    def _seed_alias_registry(self) -> None:
+        """Seed the alias registry from config, entity_linker, and graph aliases."""
+        store = self.db.alias_store
+
+        # Source 1: config user_aliases (highest confidence)
+        for alias in self._memory_config.user_aliases:
+            store.register(normalize_entity_name(alias), "_user_", confidence=1.0, source="config")
+
+        # Source 2: static entity_linker map
+        for alias, canonical in ALIAS_MAP.items():
+            store.register(
+                normalize_entity_name(alias),
+                normalize_entity_name(canonical),
+                confidence=0.9,
+                source="linker",
+            )
+
+        # Source 3: existing graph entity aliases (if graph enabled)
+        if self._memory_config.graph_enabled:
+            rows = self.db.graph_store.search_entities("", limit=1000)
+            if len(rows) >= 1000:
+                logger.warning(
+                    "Graph entity seed truncated at 1000; some aliases may not be registered"
+                )
+            for row in rows:
+                canonical = str(row.get("name", ""))
+                aliases_text = str(row.get("aliases", ""))
+                if aliases_text:
+                    for alias in aliases_text.split(","):
+                        alias = alias.strip()
+                        if alias:
+                            store.register(
+                                normalize_entity_name(alias),
+                                normalize_entity_name(canonical),
+                                confidence=0.8,
+                                source="graph",
+                            )
 
     # ------------------------------------------------------------------
     # Computed properties and internal callbacks

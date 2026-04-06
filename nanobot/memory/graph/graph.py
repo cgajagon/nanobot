@@ -25,6 +25,7 @@ from .ontology_rules import validate_triple_types
 from .ontology_types import Entity, EntityType, Relationship, Triple
 
 if TYPE_CHECKING:
+    from ..db.alias_store import AliasRegistry
     from ..db.graph_store import GraphStore
 
 
@@ -34,8 +35,10 @@ class KnowledgeGraph:
     def __init__(
         self,
         db: GraphStore | None = None,
+        alias_registry: AliasRegistry | None = None,
     ) -> None:
         self._db = db
+        self._alias_registry = alias_registry
         self.enabled: bool = db is not None
         self.error: str | None = None
 
@@ -89,6 +92,14 @@ class KnowledgeGraph:
             first_seen=first_seen,
             last_seen=entity.last_seen,
         )
+
+        # Register aliases in the unified registry
+        if self._alias_registry:
+            for alias in entity.aliases:
+                if alias.strip():
+                    self._alias_registry.register(
+                        alias, entity.name, confidence=0.8, source="graph"
+                    )
 
     async def add_relationship(self, rel: Relationship) -> None:
         """Merge a directed relationship edge between two entities."""

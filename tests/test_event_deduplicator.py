@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import sqlite3
+
+from nanobot.memory.constants import ALIAS_REGISTRY_DDL
+from nanobot.memory.db.alias_store import AliasRegistry, AliasStore
 from nanobot.memory.write.classification import EventClassifier
 from nanobot.memory.write.coercion import EventCoercer
 from nanobot.memory.write.dedup import EventDeduplicator
@@ -10,17 +14,30 @@ from nanobot.memory.write.dedup import EventDeduplicator
 def _make_dedup(
     *,
     conflict_pair_fn: object = None,
-    user_aliases: frozenset[str] | None = None,
     embedder: object = None,
+    alias_registry: object = None,
 ) -> EventDeduplicator:
     classifier = EventClassifier()
     coercer = EventCoercer(classifier)
     return EventDeduplicator(
         coercer=coercer,
         conflict_pair_fn=conflict_pair_fn,
-        user_aliases=user_aliases,
         embedder=embedder,
+        alias_registry=alias_registry,
     )
+
+
+def _make_registry(aliases: dict[str, str] | None = None) -> AliasRegistry:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(ALIAS_REGISTRY_DDL)
+    store = AliasStore(conn)
+    if aliases:
+        for alias, canonical in aliases.items():
+            store.register(alias, canonical, confidence=1.0, source="config")
+    registry = AliasRegistry(store)
+    registry.load()
+    return registry
 
 
 class TestEventSimilarity:
@@ -177,7 +194,8 @@ class TestMergeEvents:
 class TestEntityAliasNormalization:
     def test_user_alias_normalized_in_similarity(self) -> None:
         """'User likes Python' vs 'Carlos likes Python' should have high similarity with aliases."""
-        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        registry = _make_registry({"user": "_user_", "carlos": "_user_"})
+        d = _make_dedup(alias_registry=registry)
         a = {"type": "fact", "summary": "User likes Python"}
         b = {"type": "fact", "summary": "Carlos likes Python"}
         lexical, _ = d.event_similarity(a, b)
@@ -193,9 +211,46 @@ class TestEntityAliasNormalization:
 
     def test_alias_normalization_enables_dedup(self) -> None:
         """With aliases, entity name mismatch events are detected as duplicates."""
-        d = _make_dedup(user_aliases=frozenset({"user", "carlos"}))
+        registry = _make_registry({"user": "_user_", "carlos": "_user_"})
+        d = _make_dedup(alias_registry=registry)
         existing = [{"type": "fact", "summary": "User uses Obsidian for knowledge management"}]
         candidate = {"type": "fact", "summary": "Carlos uses Obsidian for knowledge management"}
+        idx, score = d.find_semantic_duplicate(candidate, existing)
+        assert idx == 0
+
+
+class TestEntityNormalizationInSimilarity:
+    def test_possessive_entities_match_in_similarity(self) -> None:
+        """'User's project' and 'User project' should have high entity overlap."""
+        d = _make_dedup()
+        a = {"type": "fact", "summary": "Working on the project", "entities": ["User's"]}
+        b = {"type": "fact", "summary": "Working on the project", "entities": ["User"]}
+        # After normalization, both entity tokens become "user"
+        lexical, _ = d.event_similarity(a, b)
+        assert lexical >= 0.9
+
+    def test_possessive_entities_match_in_dedup(self) -> None:
+        """Entity overlap in find_semantic_duplicate should normalize possessives.
+
+        Summaries differ enough that lexical similarity alone (~0.27) won't trigger
+        any merge threshold. Entity overlap is the deciding factor:
+        - With _norm_text: "user's" != "user" -> overlap=0 -> no merge
+        - With normalize_entity_name: both -> "user" -> overlap=1.0 -> merges
+          (entity_overlap >= 0.30 AND lexical >= 0.25 AND same type)
+        """
+        d = _make_dedup()
+        existing = [
+            {
+                "type": "fact",
+                "summary": "Prefers dark mode for coding",
+                "entities": ["User's"],
+            }
+        ]
+        candidate = {
+            "type": "fact",
+            "summary": "Likes dark theme when programming",
+            "entities": ["User"],
+        }
         idx, score = d.find_semantic_duplicate(candidate, existing)
         assert idx == 0
 
@@ -230,3 +285,14 @@ class TestMergeSourceSpan:
 
     def test_invalid_incoming(self) -> None:
         assert EventDeduplicator.merge_source_span([5, 10], None) == [5, 10]
+
+
+class TestAliasRegistryInSimilarity:
+    def test_registry_resolves_aliases_in_similarity(self) -> None:
+        registry = _make_registry({"carlos": "_user_", "user": "_user_"})
+        d = _make_dedup(alias_registry=registry)
+        a = {"type": "fact", "summary": "Carlos likes Python", "entities": ["Carlos"]}
+        b = {"type": "fact", "summary": "User likes Python", "entities": ["User"]}
+        lexical, _ = d.event_similarity(a, b)
+        # With alias resolution, "carlos" and "user" both become "_user_"
+        assert lexical >= 0.9
