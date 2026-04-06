@@ -48,6 +48,8 @@ _STABILITY_HALF_LIFE: dict[str, float] = {
     "low": 14.0,
 }
 
+_GRAPH_ENTITY_HALF_LIFE_DAYS: float = 90.0
+
 
 def _contains_norm_phrase(text: str, phrase_norm: str) -> bool:
     if not phrase_norm:
@@ -270,6 +272,7 @@ class RetrievalScorer:
         resolved_keep_new_new = profile_data["resolved_keep_new_new"]
 
         graph_boost_value = 0.15 if graph_entities else 0.0
+        graph_entity_keys = set(graph_entities) if graph_entities else set()
 
         scored: list[dict[str, Any]] = []
         for item in items:
@@ -376,14 +379,14 @@ class RetrievalScorer:
                 item_entities = {
                     e.lower() for e in (item.get("entities") or []) if isinstance(e, str)
                 }
-                matched = item_entities & set(graph_entities)
+                matched = item_entities & graph_entity_keys
                 if matched:
                     best_recency = 0.0
                     for ent in matched:
                         last_seen = graph_entities.get(ent, "")
                         if last_seen:
                             ent_recency = RetrievalPlanner.recency_signal(
-                                last_seen, half_life_days=90.0
+                                last_seen, half_life_days=_GRAPH_ENTITY_HALF_LIFE_DAYS
                             )
                             best_recency = max(best_recency, ent_recency)
                         else:
