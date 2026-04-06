@@ -102,7 +102,7 @@ class AliasRegistry:
         normalized_canonical = normalize_entity_name(canonical)
         if not normalized_alias or not normalized_canonical:
             return
-        # Only update if new confidence is higher than cached
+        # Skip if already mapped to the same canonical
         existing = self._cache.get(normalized_alias)
         if existing == normalized_canonical:
             return  # already mapped correctly

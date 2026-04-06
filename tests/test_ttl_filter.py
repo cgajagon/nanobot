@@ -54,6 +54,22 @@ class TestFilterExpired:
         result = filter_expired(items, self._now())
         assert len(result) == 3
 
+    def test_expired_even_with_old_last_confirmed(self) -> None:
+        """Events are excluded when both timestamp AND last_confirmed exceed TTL."""
+        old_ts = (self._now() - timedelta(days=60)).isoformat()
+        old_confirmed = (self._now() - timedelta(days=45)).isoformat()
+        items = [
+            {
+                "id": "1",
+                "summary": "Old confirmed but still expired",
+                "timestamp": old_ts,
+                "last_confirmed": old_confirmed,
+                "ttl_days": 30,
+            }
+        ]
+        result = filter_expired(items, self._now())
+        assert len(result) == 0
+
     def test_no_timestamp_passes_through(self) -> None:
         items = [{"id": "1", "summary": "No ts", "ttl_days": 30}]
         result = filter_expired(items, self._now())

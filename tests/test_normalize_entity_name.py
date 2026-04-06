@@ -43,6 +43,9 @@ class TestNormalizeEntityName:
             ("   ", ""),
             # Multiple spaces become single underscore
             ("New   York   City", "new_york_city"),
+            # Stacked transformations
+            ("Dr. O'Brien's", "obrien"),
+            ("Prof. Mar\u00eda's", "mar\u00eda"),
         ],
     )
     def test_normalization(self, raw: str, expected: str) -> None:

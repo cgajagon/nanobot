@@ -319,6 +319,31 @@ class TestSourceRolePreservation:
         assert event is not None
         assert event.source_role == ""
 
+    def test_from_dict_preserves_source_role(self) -> None:
+        """MemoryEvent.from_dict preserves source_role (micro-extraction path)."""
+        from nanobot.memory.event import MemoryEvent
+
+        event = MemoryEvent.from_dict(
+            {
+                "type": "fact",
+                "summary": "User uses Python",
+                "source_role": "user",
+            }
+        )
+        assert event.source_role == "user"
+
+    def test_from_dict_defaults_source_role_empty(self) -> None:
+        """MemoryEvent.from_dict defaults source_role to empty string."""
+        from nanobot.memory.event import MemoryEvent
+
+        event = MemoryEvent.from_dict(
+            {
+                "type": "fact",
+                "summary": "User uses Python",
+            }
+        )
+        assert event.source_role == ""
+
     def test_coercion_rejects_invalid_source_role(self) -> None:
         classifier = EventClassifier()
         coercer = EventCoercer(classifier)
@@ -380,6 +405,23 @@ class TestLastConfirmedInMerge:
             "summary": "User uses Python",
             "entities": ["Python"],
             "source_role": "consolidation",
+        }
+        merged = d.merge_events(base, incoming, similarity=0.9)
+        assert merged["last_confirmed"] > "2025-01-01T00:00:00Z"
+
+    def test_merge_bumps_last_confirmed_for_tool_source(self) -> None:
+        d = _make_dedup()
+        base = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "last_confirmed": "2025-01-01T00:00:00Z",
+        }
+        incoming = {
+            "type": "fact",
+            "summary": "User uses Python",
+            "entities": ["Python"],
+            "source_role": "tool",
         }
         merged = d.merge_events(base, incoming, similarity=0.9)
         assert merged["last_confirmed"] > "2025-01-01T00:00:00Z"

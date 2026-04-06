@@ -283,6 +283,40 @@ class TestStabilityAwareDecay:
         # High stability should have higher final score due to slower decay
         assert scored_high[0]["score"] > scored_low[0]["score"]
 
+    def test_unknown_stability_uses_policy_fallback(self) -> None:
+        """Unknown stability value falls back to policy half_life_days."""
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 30.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        items = [
+            {
+                "id": "u1",
+                "type": "fact",
+                "summary": "Unknown stability",
+                "memory_type": "semantic",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "score": 0.5,
+                "stability": "unknown_value",
+                "entities": [],
+            }
+        ]
+        # Should not crash — falls back to policy half_life_days
+        scored = scorer.score_items(
+            items,
+            plan,
+            profile_data,
+            {},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        assert len(scored) == 1
+        assert scored[0]["score"] > 0
+
     def test_recency_uses_last_confirmed_over_timestamp(self) -> None:
         """last_confirmed should take precedence over timestamp for recency."""
         scorer = _make_scorer()
@@ -523,3 +557,54 @@ class TestGraphRecencyBoost:
         g_boost = reason.get("graph_boost", 0.0)
         # 0.15 * max(0.5, 0.2) = 0.075
         assert 0.07 <= g_boost <= 0.08
+
+    def test_multiple_entities_best_recency_wins(self) -> None:
+        """When item matches multiple graph entities, the most recent one determines boost."""
+        from datetime import datetime, timedelta, timezone
+
+        scorer = _make_scorer()
+        plan = _make_plan(policy={"half_life_days": 60.0, "type_boost": {}})
+        profile_data = {
+            "profile": {},
+            "resolved_keep_new_old": {k: set() for k in PROFILE_KEYS},
+            "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
+        }
+        recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        old = "2024-01-01T00:00:00Z"
+        ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+        def _make_item(entities: list[str]) -> dict[str, Any]:
+            return {
+                "id": "m1",
+                "type": "fact",
+                "summary": "Uses Python and Java",
+                "memory_type": "semantic",
+                "timestamp": ts,
+                "score": 0.5,
+                "stability": "medium",
+                "entities": entities,
+            }
+
+        # python is recent, java is old -- best (python) should win
+        graph_entities = {"python": recent, "java": old}
+        scored = scorer.score_items(
+            [_make_item(["python", "java"])],
+            plan,
+            profile_data,
+            graph_entities,
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        # Score should be close to what a single recent entity would give
+        scored_single = scorer.score_items(
+            [_make_item(["python"])],
+            plan,
+            profile_data,
+            {"python": recent},
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
+        )
+        # Multi-entity score should equal single-best-entity score
+        assert abs(scored[0]["score"] - scored_single[0]["score"]) < 0.01
