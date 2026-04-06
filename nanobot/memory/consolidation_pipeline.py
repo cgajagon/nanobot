@@ -257,6 +257,7 @@ class ConsolidationPipeline:
             profile_updates,
             enable_contradiction_check=enable_contradiction_check,
             source_event_ids=event_ids,
+            source_role="consolidation",
         )
         if events_written > 0 or profile_added > 0 or profile_touched > 0:
             profile["last_verified_at"] = _utc_now_iso()

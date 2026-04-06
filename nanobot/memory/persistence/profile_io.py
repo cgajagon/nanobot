@@ -83,6 +83,7 @@ class _ConflictManagerProtocol(Protocol):
         *,
         enable_contradiction_check: bool,
         source_event_ids: list[str] | None = None,
+        source_role: str = "",
     ) -> tuple[int, int, int]:
         """Apply updates to the profile, returning counts of added, updated, and conflicted."""
 
@@ -502,6 +503,7 @@ class ProfileStore:
         *,
         enable_contradiction_check: bool,
         source_event_ids: list[str] | None = None,
+        source_role: str = "",
     ) -> tuple[int, int, int]:
         """Delegate to ConflictManager._apply_profile_updates."""
         if self._conflict_mgr is None:
@@ -511,6 +513,7 @@ class ProfileStore:
             updates,
             enable_contradiction_check=enable_contradiction_check,
             source_event_ids=source_event_ids,
+            source_role=source_role,
         )
         return result
 

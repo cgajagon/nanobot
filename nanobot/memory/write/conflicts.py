@@ -110,14 +110,21 @@ class ConflictManager:
         *,
         enable_contradiction_check: bool,
         source_event_ids: list[str] | None = None,
+        source_role: str = "",
     ) -> tuple[int, int, int]:
         """Apply profile field updates, detecting contradictions.
 
         Returns (added, conflicts, touched) counts.
+
+        When *source_role* is ``"assistant"`` the update is treated as an
+        echo (the LLM restating what it already knows).  Confidence bumps
+        are suppressed to prevent artificial inflation, matching the echo
+        detection pattern used in ``EventDeduplicator``.
         """
         added = 0
         conflicts = 0
         touched = 0
+        is_echo = source_role == "assistant"
         profile.setdefault("conflicts", [])
         evidence_ids = [source_event_ids[0]] if source_event_ids else None
 
@@ -130,21 +137,22 @@ class ConflictManager:
                     continue
 
                 if normalized in seen:
-                    # Existing belief — bump confidence.
+                    # Existing belief — bump confidence (unless echo).
+                    conf_delta = 0.0 if is_echo else 0.03
                     entry = self.profile_store._meta_entry(profile, key, candidate)
                     belief_id = entry.get("id", "")
                     if belief_id:
                         self.profile_store._update_belief_in_profile(
                             profile,
                             belief_id,
-                            confidence_delta=0.03,
+                            confidence_delta=conf_delta,
                             new_evidence_ids=evidence_ids,
                             status=PROFILE_STATUS_ACTIVE,
                         )
                     else:
                         self.profile_store._touch_meta_entry(
                             entry,
-                            confidence_delta=0.03,
+                            confidence_delta=conf_delta,
                             status=PROFILE_STATUS_ACTIVE,
                             evidence_event_id=evidence_ids[0] if evidence_ids else None,
                         )
@@ -213,11 +221,12 @@ class ConflictManager:
                             break
 
                 if not has_conflict:
-                    # Boost confidence for non-conflicted new beliefs.
+                    # Boost confidence for non-conflicted new beliefs (unless echo).
+                    new_conf_delta = 0.0 if is_echo else 0.1
                     entry = self.profile_store._meta_entry(profile, key, candidate)
                     self.profile_store._touch_meta_entry(
                         entry,
-                        confidence_delta=0.1,
+                        confidence_delta=new_conf_delta,
                         status=PROFILE_STATUS_ACTIVE,
                         evidence_event_id=evidence_ids[0] if evidence_ids else None,
                     )
