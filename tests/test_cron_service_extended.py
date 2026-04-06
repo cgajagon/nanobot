@@ -97,3 +97,62 @@ async def test_at_job_delete_after_run(tmp_path) -> None:
     )
     await service._execute_job(job)
     assert not any(j.id == job.id for j in service.list_jobs(include_disabled=True))
+
+
+@pytest.mark.usefixtures("propagate_loguru_to_caplog")
+async def test_arm_timer_logs_next_wake(tmp_path, caplog) -> None:
+    """When a job is added and the service is running, _arm_timer logs the delay."""
+    import logging
+
+    service = CronService(tmp_path / "cron" / "jobs.json")
+    with caplog.at_level(logging.DEBUG, logger="nanobot.cron.service"):
+        await service.start()
+        service.add_job(
+            name="log test",
+            schedule=CronSchedule(kind="every", every_ms=300_000),
+            message="hello",
+        )
+        service.stop()
+
+    armed_logs = [r for r in caplog.records if "armed" in r.message.lower()]
+    assert len(armed_logs) >= 1, f"Expected 'armed' log, got: {[r.message for r in caplog.records]}"
+
+
+@pytest.mark.usefixtures("propagate_loguru_to_caplog")
+async def test_arm_timer_logs_no_wake(tmp_path, caplog) -> None:
+    """When no enabled jobs exist, _arm_timer logs that no timer is needed."""
+    import logging
+
+    service = CronService(tmp_path / "cron" / "jobs.json")
+    with caplog.at_level(logging.DEBUG, logger="nanobot.cron.service"):
+        await service.start()
+        service.stop()
+
+    no_wake_logs = [r for r in caplog.records if "no wake" in r.message.lower()]
+    assert len(no_wake_logs) >= 1, (
+        f"Expected 'no wake' log, got: {[r.message for r in caplog.records]}"
+    )
+
+
+@pytest.mark.usefixtures("propagate_loguru_to_caplog")
+async def test_on_timer_logs_due_jobs(tmp_path, caplog) -> None:
+    """When _on_timer fires, it logs how many jobs are due."""
+    import logging
+
+    service = CronService(tmp_path / "cron" / "jobs.json")
+    await service.start()
+    job = service.add_job(
+        name="due job",
+        schedule=CronSchedule(kind="every", every_ms=1),
+        message="hello",
+    )
+    # Force the job to be due by setting next_run to the past
+    job.state.next_run_at_ms = 1
+
+    with caplog.at_level(logging.DEBUG, logger="nanobot.cron.service"):
+        await service._on_timer()
+
+    service.stop()
+
+    timer_logs = [r for r in caplog.records if "due" in r.message.lower()]
+    assert len(timer_logs) >= 1, f"Expected 'due' log, got: {[r.message for r in caplog.records]}"
