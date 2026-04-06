@@ -118,7 +118,6 @@ class ChannelManager:
             self.channels["web"] = WebChannel(
                 self.config.channels.web,
                 self.bus,
-                managed=True,
             )
             logger.info("Web channel enabled")
 
