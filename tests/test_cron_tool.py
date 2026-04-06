@@ -13,6 +13,7 @@ from nanobot.tools.builtin.cron import CronTool
 @pytest.fixture()
 def cron_tool() -> CronTool:
     svc = MagicMock()
+    svc.is_running = True
     tool = CronTool(cron_service=svc)
     tool.set_context(channel="test", chat_id="123")
     return tool
@@ -132,7 +133,7 @@ class TestCronToolServiceGuard:
 
     async def test_add_blocked_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         tool = CronTool(cron_service=svc)
         tool.set_context(channel="test", chat_id="123")
         result = await tool.execute(action="add", message="ping", every_seconds=60)
@@ -141,7 +142,7 @@ class TestCronToolServiceGuard:
 
     async def test_enable_blocked_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         tool = CronTool(cron_service=svc)
         result = await tool.execute(action="enable", job_id="j1")
         assert not result.success
@@ -149,7 +150,7 @@ class TestCronToolServiceGuard:
 
     async def test_update_blocked_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         tool = CronTool(cron_service=svc)
         result = await tool.execute(action="update", job_id="j1", message="new")
         assert not result.success
@@ -157,7 +158,7 @@ class TestCronToolServiceGuard:
 
     async def test_list_works_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         svc.list_jobs.return_value = []
         tool = CronTool(cron_service=svc)
         result = await tool.execute(action="list")
@@ -165,7 +166,7 @@ class TestCronToolServiceGuard:
 
     async def test_remove_works_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         svc.remove_job.return_value = True
         tool = CronTool(cron_service=svc)
         result = await tool.execute(action="remove", job_id="j1")
@@ -173,7 +174,7 @@ class TestCronToolServiceGuard:
 
     async def test_disable_works_when_not_running(self) -> None:
         svc = MagicMock()
-        svc._running = False
+        svc.is_running = False
         mock_job = MagicMock(id="j1")
         mock_job.name = "reminder"
         svc.enable_job.return_value = mock_job
@@ -183,7 +184,7 @@ class TestCronToolServiceGuard:
 
     async def test_add_works_when_running(self) -> None:
         svc = MagicMock()
-        svc._running = True
+        svc.is_running = True
         mock_job = MagicMock(id="j1")
         mock_job.name = "test"
         svc.add_job.return_value = mock_job
@@ -195,7 +196,7 @@ class TestCronToolServiceGuard:
 
 class _FakeCron:
     def __init__(self) -> None:
-        self._running = True
+        self.is_running = True
         self.jobs: dict[str, SimpleNamespace] = {}
 
     def add_job(self, **kwargs):

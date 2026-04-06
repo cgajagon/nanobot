@@ -67,7 +67,7 @@ class CronTool(Tool):
         tz: str | None = kwargs.pop("tz", None)
         at: str | None = kwargs.pop("at", None)
         job_id: str | None = kwargs.pop("job_id", None)
-        if action in ("add", "enable", "update") and not self._cron._running:
+        if action in ("add", "enable", "update") and not self._cron.is_running:
             return ToolResult.fail(
                 "Cron scheduling is not available in this mode. "
                 "Use `nanobot gateway` to run the agent with cron support."
