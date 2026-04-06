@@ -191,7 +191,7 @@ class EventStore:
             event = dict(row)
             raw_vec = event.pop("embedding", None)
             events.append(event)
-            if raw_vec is not None:
+            if raw_vec is not None and len(raw_vec) >= 4 and len(raw_vec) % 4 == 0:
                 n_floats = len(raw_vec) // 4
                 vectors[event["id"]] = list(struct.unpack(f"{n_floats}f", raw_vec))
         return events, vectors
