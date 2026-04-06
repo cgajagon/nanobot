@@ -38,6 +38,7 @@ dependencies = [
     "prompt-toolkit>=3.0.50,<4.0.0",
     "mcp>=1.26.0,<2.0.0",
     "json-repair>=0.57.0,<1.0.0",
+    "packaging>=24.0",  # runtime dep of langfuse/onnxruntime; pip uninstall setuptools removes it
     "sqlite-vec>=0.1.7",
     "langfuse>=4.0.0,<5.0.0",
     "duckdb>=1.0.0,<2.0.0",
