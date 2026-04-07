@@ -1,7 +1,7 @@
 # Memory Performance Optimizations Design
 
 > Date: 2026-04-07
-> Status: Approved
+> Status: Approved (revised after architecture + code review)
 > Scope: 3 independent, low-risk performance optimizations to the memory subsystem
 
 ## Problem Statement
@@ -35,7 +35,9 @@ gather(embed(query), search_fts(query)) → search_vector(query_vec) → fuse
 ### Change
 
 Replace the sequential `embed()` + two-way `asyncio.gather()` with a two-way
-`gather(embed, search_fts)`, then run `search_vector` with the embedding result:
+`gather(embed, search_fts)`, then run `search_vector` with the embedding result.
+Wrap embed in a safe helper so that embed failure degrades gracefully to FTS-only
+retrieval instead of failing the entire query.
 
 ```python
 # Before (lines 155-162):
@@ -46,26 +48,44 @@ vec_results, fts_results = await asyncio.gather(
 )
 
 # After:
+async def _safe_embed() -> list[float] | None:
+    try:
+        return await self._embedder.embed(query)
+    except Exception:  # crash-barrier: degrade to FTS-only on embed failure
+        bind_trace().warning("Embedding failed, falling back to FTS-only retrieval")
+        return None
+
 query_vec, fts_results = await asyncio.gather(
-    self._embedder.embed(query),
+    _safe_embed(),
     asyncio.to_thread(self._db.search_fts, query, candidate_k),
 )
-vec_results = await asyncio.to_thread(
-    self._db.search_vector, query_vec, candidate_k
-)
+
+# Vector search only if embedding succeeded
+if query_vec is not None:
+    vec_results = await asyncio.to_thread(
+        self._db.search_vector, query_vec, candidate_k
+    )
+else:
+    vec_results = []
 ```
+
+This is strictly better than the current code: previously, embed failure caused the
+entire retrieval to fail. Now it degrades to FTS-only results.
 
 ### Savings
 
-~200-300ms per query. FTS latency (previously sequential) is hidden behind the
-embedding API call. Vector search adds ~5ms sequentially after embed completes.
+FTS latency (typically 5-15ms) is hidden behind the embedding API call (200-500ms).
+Actual savings = `min(embed_time, fts_time)` — typically the full FTS duration since
+embed is slower. Vector search adds ~5ms sequentially after embed completes.
 
 ### Test Plan
 
 - Existing `TestUnifiedRetrievePath` tests pass unchanged (mock embed as async,
   search_fts/search_vector as sync; same assertions).
-- New test: verify FTS is called concurrently with embed by mocking embed with
-  `asyncio.sleep(0.1)` and asserting FTS completes before embed returns.
+- New test: embed raises an exception → retrieval still returns FTS-only results
+  (verifies the graceful degradation path).
+- No timing-based concurrency tests — the latency improvement is verified via
+  existing Langfuse `duration_ms` metrics in production.
 
 ## Optimization 2: Cache FTS Dedup Candidates
 
@@ -124,11 +144,23 @@ if not supersession_found:
 
 Halves FTS5 DB queries + unpacking work for every semantic event written.
 
+### Notes
+
+- `memory_type_for_item(candidate)` is a pure function on the candidate dict —
+  the `is_semantic` check is safe to evaluate once and reuse for both steps.
+- Caching makes the dedup pipeline non-refreshing within a single event's processing.
+  This is acceptable because `append_events` is synchronous and called from
+  `asyncio.to_thread` — no concurrent writes can interleave.
+- `fts_vectors` is also reused alongside `fts_candidates` — both are returned from
+  the same `_find_dedup_candidates()` call and stay consistent.
+
 ### Test Plan
 
 - Existing `test_ingester.py` tests pass unchanged (test via public `append_events()`).
-- New test: mock `_find_dedup_candidates` and verify `call_count == 1` for a semantic
-  event that goes through both supersession and duplicate checks.
+- No new tests needed — the optimization is purely internal. Behavioral correctness
+  is already verified by existing dedup/supersession contract tests. Performance
+  improvement is observable via existing `bind_trace().debug("memory_append | ...")`
+  timing in debug logs.
 
 ## Optimization 3: Trivial-Turn Skip for Micro-Extraction
 
@@ -157,11 +189,22 @@ _TRIVIAL_MAX_LEN: int = 20
 #### Pre-filter logic
 
 ```python
+# Assistant message threshold — skip only when assistant response is also short,
+# to avoid dropping turns where user says "ok" but assistant contains corrections.
+_TRIVIAL_ASSISTANT_MAX_LEN: int = 100
+
 async def submit(self, user_message, assistant_message, **kwargs):
     if not self._enabled:
         return
     stripped = user_message.strip()
-    if len(stripped) <= _TRIVIAL_MAX_LEN and stripped.lower().rstrip("!.,?") in _TRIVIAL_PATTERNS:
+    if not stripped:
+        logger.debug("Micro-extraction: skipped empty turn")
+        return
+    if (
+        len(stripped) <= _TRIVIAL_MAX_LEN
+        and stripped.lower().rstrip("!.,?") in _TRIVIAL_PATTERNS
+        and len(assistant_message.strip()) <= _TRIVIAL_ASSISTANT_MAX_LEN
+    ):
         logger.debug("Micro-extraction: skipped trivial turn ({!r})", stripped[:30])
         return
     # ... create_task as before ...
@@ -171,11 +214,19 @@ async def submit(self, user_message, assistant_message, **kwargs):
 
 - `rstrip("!.,?")` handles "Thanks!", "Ok.", "Yes?" etc.
 - Length check first (O(1)) before normalization to short-circuit
-- Conservative threshold: only skips exact pattern matches at ≤20 chars.
-  Multi-word messages beyond the pattern set always pass through (e.g.,
-  "no, use Python 3.12" is 21 chars → exceeds threshold → not skipped).
+- Conservative threshold: only skips exact pattern matches at ≤20 chars
+- **Both messages must be trivial:** A user saying "ok" while the assistant corrects
+  a prior mistake (long response) will NOT be skipped. The assistant_message length
+  check (`_TRIVIAL_ASSISTANT_MAX_LEN = 100`) ensures extractable assistant content
+  always reaches the LLM.
+- Empty/whitespace-only user messages are skipped immediately (never produce events)
 - `frozenset` for O(1) lookup
 - Debug log for observability
+- Emoji variation selectors (U+FE0F) may cause pattern mismatch — this is the
+  conservative direction (passes through to extraction). Acceptable trade-off.
+- Multi-word messages beyond the pattern set pass through even at ≤20 chars
+  because the frozenset lookup fails (e.g., "no, use Python 3.12" is 20 chars,
+  passes the length check, but is not in the pattern set → not skipped)
 
 ### Savings
 
@@ -184,10 +235,12 @@ async def submit(self, user_message, assistant_message, **kwargs):
 
 ### Test Plan
 
-- Trivial messages skipped: "ok", "Thanks!", "yes?", "👍"
+- Trivial messages skipped: "ok", "Thanks!", "yes?", "👍" (with short assistant msg)
 - Non-trivial messages pass through: "no, use Python 3.12", "the vault is at C:\..."
-- Edge cases: punctuation stripping, mixed case, empty string, just-over-threshold
-  length, multi-word patterns ("sounds good", "go ahead")
+- Trivial user + long assistant passes through (assistant has extractable content)
+- Empty/whitespace-only user messages skipped
+- Edge cases: punctuation stripping, mixed case, just-over-threshold length,
+  multi-word patterns ("sounds good", "go ahead")
 - Verify no async task is created for skipped turns
 
 ## Cross-Cutting Concerns
