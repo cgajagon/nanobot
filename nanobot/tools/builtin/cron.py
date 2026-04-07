@@ -22,7 +22,14 @@ class CronTool(Tool):
                 "enum": ["add", "list", "remove", "enable", "disable", "update"],
                 "description": "Action to perform",
             },
-            "message": {"type": "string", "description": "Reminder message (for add)"},
+            "message": {
+                "type": "string",
+                "description": (
+                    "The full prompt text the agent will execute when this job fires. "
+                    "Include the user's complete instructions verbatim — this is the "
+                    "only context the agent receives (for add/update)."
+                ),
+            },
             "every_seconds": {
                 "type": "integer",
                 "description": "Interval in seconds (for recurring tasks)",

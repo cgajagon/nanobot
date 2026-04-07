@@ -30,6 +30,13 @@ class TestCronToolProperties:
         params = cron_tool.parameters
         assert "action" in params["properties"]
 
+    def test_message_description_signals_full_prompt(self, cron_tool: CronTool):
+        desc = cron_tool.parameters["properties"]["message"]["description"]
+        # Must NOT say "reminder" (misleads LLM into summarizing)
+        assert "reminder" not in desc.lower()
+        # Must communicate that this is the full execution prompt
+        assert "verbatim" in desc.lower() or "exact" in desc.lower() or "full" in desc.lower()
+
 
 class TestCronToolExecute:
     async def test_unknown_action(self, cron_tool: CronTool):
