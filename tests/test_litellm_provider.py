@@ -534,6 +534,66 @@ async def test_stream_chat_omits_api_key_for_cross_provider_model(
     assert "api_key" not in captured_kwargs
 
 
+@pytest.mark.asyncio
+async def test_chat_invalid_request_sets_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BadRequestError sets finish_reason='invalid_request', not 'error'."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.BadRequestError(
+            message="invalid_request_error: orphaned tool_result",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_chat_auth_error_sets_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AuthenticationError sets finish_reason='auth_error', not 'error'."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.AuthenticationError(
+            message="invalid api key",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "auth_error"
+
+
+@pytest.mark.asyncio
+async def test_chat_generic_error_keeps_finish_reason_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown exceptions keep finish_reason='error' (existing behavior)."""
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "error"
+
+
 def test_sanitize_strips_orphaned_tool_result() -> None:
     """Tool result without matching assistant tool_call is stripped."""
     messages = [

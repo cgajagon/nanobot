@@ -290,10 +290,19 @@ class LiteLLMProvider(LLMProvider):
             elapsed = time.monotonic() - t0
             llm_calls_total.labels(model=model, role="chat", success="False").inc()
             llm_latency_seconds.labels(model=model, role="chat").observe(elapsed)
-            # Return error as content for graceful handling
+            error_str = str(e)
+            exc_name = type(e).__name__
+            # Classify into distinct finish_reason values so the turn runner
+            # can fail fast on non-retryable errors without inspecting content.
+            if "BadRequestError" in exc_name or "invalid_request" in error_str:
+                finish = "invalid_request"
+            elif "AuthenticationError" in exc_name or "401" in error_str:
+                finish = "auth_error"
+            else:
+                finish = "error"
             return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
+                content=f"Error calling LLM: {error_str}",
+                finish_reason=finish,
             )
 
     def _parse_response(self, response: Any) -> LLMResponse:
@@ -479,9 +488,17 @@ class LiteLLMProvider(LLMProvider):
             elapsed = time.monotonic() - t0
             llm_calls_total.labels(model=resolved, role="stream", success="False").inc()
             llm_latency_seconds.labels(model=resolved, role="stream").observe(elapsed)
+            error_str = str(e)
+            exc_name = type(e).__name__
+            if "BadRequestError" in exc_name or "invalid_request" in error_str:
+                finish = "invalid_request"
+            elif "AuthenticationError" in exc_name or "401" in error_str:
+                finish = "auth_error"
+            else:
+                finish = "error"
             yield StreamChunk(
-                content_delta=f"Error calling LLM: {e}",
-                finish_reason="error",
+                content_delta=f"Error calling LLM: {error_str}",
+                finish_reason=finish,
                 done=True,
             )
 
