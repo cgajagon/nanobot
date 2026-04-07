@@ -645,7 +645,8 @@ def _build_error_with_progress(
     last user message -- not the full history.
 
     *error_type* selects the fallback wording when no tools ran:
-    ``"error"`` (default), ``"content_filter"``, or ``"length"``.
+    ``"error"`` (default), ``"content_filter"``, ``"length"``,
+    ``"invalid_request"``, or ``"auth_error"``.
     """
     last_user_idx = 0
     for i, m in enumerate(state.messages):
