@@ -939,3 +939,78 @@ class TestEmbedFailureDegradation:
         mock_db.search_vector.assert_called_once()
         mock_db.search_fts.assert_called_once()
         assert len(results) >= 1
+
+
+class TestEventsCache:
+    """Events are read once and cached across collect + build calls."""
+
+    def test_read_events_called_once_across_methods(self) -> None:
+        """_read_events_fn should be called once, not twice."""
+        call_count = 0
+        events_data: list[dict[str, Any]] = [
+            {
+                "entities": ["Alice"],
+                "triples": [
+                    {"subject": "Alice", "predicate": "knows", "object": "Bob"},
+                ],
+            }
+        ]
+
+        def counting_read(**kwargs: Any) -> list[dict[str, Any]]:
+            nonlocal call_count
+            call_count += 1
+            return events_data
+
+        from nanobot.memory.read.graph_augmentation import GraphAugmenter
+
+        graph = MagicMock()
+        graph.enabled = True
+        graph.get_related_entity_names_sync = MagicMock(return_value=set())
+        graph.get_entities_batch = MagicMock(return_value={})
+        graph.get_triples_for_entities_sync = MagicMock(return_value=[])
+        graph.get_entity_row = MagicMock(return_value={"last_seen": ""})
+
+        extractor = MagicMock()
+        extractor._extract_entities = MagicMock(return_value=[])
+
+        graph_aug = GraphAugmenter(
+            graph=graph,
+            extractor=extractor,
+            read_events_fn=counting_read,
+        )
+
+        with patch(
+            "nanobot.memory.read.graph_augmentation.extract_entities",
+            return_value=["Alice"],
+        ):
+            # First call — populates cache
+            graph_aug.collect_graph_entity_names("Alice query", graph_aug.read_events())
+            # Second call — should reuse cache
+            graph_aug.build_graph_context_lines("Alice query", [], max_tokens=100)
+
+        assert call_count == 1, f"Expected 1 call to read_events, got {call_count}"
+
+    def test_cache_cleared_on_reset(self) -> None:
+        """After reset_cache(), events are re-fetched."""
+        call_count = 0
+
+        def counting_read(**kwargs: Any) -> list[dict[str, Any]]:
+            nonlocal call_count
+            call_count += 1
+            return []
+
+        from nanobot.memory.read.graph_augmentation import GraphAugmenter
+
+        graph = MagicMock()
+        graph.enabled = False
+
+        graph_aug = GraphAugmenter(
+            graph=graph,
+            extractor=MagicMock(),
+            read_events_fn=counting_read,
+        )
+
+        graph_aug.read_events()  # call 1
+        graph_aug.reset_cache()
+        graph_aug.read_events()  # call 2 (cache was cleared)
+        assert call_count == 2
