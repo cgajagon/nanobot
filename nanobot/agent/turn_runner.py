@@ -584,6 +584,18 @@ class TurnRunner:
         on_progress: ProgressCallback | None,
     ) -> tuple[Literal["continue", "break", "proceed"], str | None]:
         """Handle LLM-level error finish reasons."""
+        if response.finish_reason == "invalid_request":
+            logger.warning("Non-retryable LLM error (invalid request): {}", response.content)
+            fc = _build_error_with_progress(state, error_type="invalid_request")
+            state.messages[:] = self._context.add_assistant_message(state.messages, fc)
+            return "break", fc
+
+        if response.finish_reason == "auth_error":
+            logger.warning("Non-retryable LLM error (auth): {}", response.content)
+            fc = _build_error_with_progress(state, error_type="auth_error")
+            state.messages[:] = self._context.add_assistant_message(state.messages, fc)
+            return "break", fc
+
         if response.finish_reason == "error":
             state.consecutive_errors += 1
             logger.warning(
@@ -644,6 +656,17 @@ def _build_error_with_progress(
     for m in state.messages[last_user_idx + 1 :]:
         if m.get("role") == "tool" and m.get("name"):
             tool_summaries.append(f"- {m['name']}")
+
+    if error_type == "invalid_request":
+        return (
+            "I encountered an error preparing the conversation for the language model. "
+            "This usually resolves by starting a new conversation."
+        )
+    if error_type == "auth_error":
+        return (
+            "Authentication with the language model failed. "
+            "Please check your API key configuration."
+        )
 
     if not tool_summaries:
         if error_type == "content_filter":
