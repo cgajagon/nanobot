@@ -16,6 +16,20 @@ from nanobot.providers.registry import find_by_model, find_gateway
 from nanobot.providers.sanitize import sanitize_messages
 
 
+def _classify_llm_error(exc: Exception) -> str:
+    """Classify an LLM exception into a finish_reason value.
+
+    Uses ``isinstance`` for type-safe matching against litellm's exception
+    hierarchy. Falls back to ``"error"`` for unknown exception types, which
+    triggers the existing retry-with-backoff path in the turn runner.
+    """
+    if isinstance(exc, litellm.BadRequestError):
+        return "invalid_request"
+    if isinstance(exc, litellm.AuthenticationError):
+        return "auth_error"
+    return "error"
+
+
 class LiteLLMProvider(LLMProvider):
     """
     LLM provider using LiteLLM for multi-provider support.
@@ -290,19 +304,9 @@ class LiteLLMProvider(LLMProvider):
             elapsed = time.monotonic() - t0
             llm_calls_total.labels(model=model, role="chat", success="False").inc()
             llm_latency_seconds.labels(model=model, role="chat").observe(elapsed)
-            error_str = str(e)
-            exc_name = type(e).__name__
-            # Classify into distinct finish_reason values so the turn runner
-            # can fail fast on non-retryable errors without inspecting content.
-            if "BadRequestError" in exc_name or "invalid_request" in error_str:
-                finish = "invalid_request"
-            elif "AuthenticationError" in exc_name or "401" in error_str:
-                finish = "auth_error"
-            else:
-                finish = "error"
             return LLMResponse(
-                content=f"Error calling LLM: {error_str}",
-                finish_reason=finish,
+                content=f"Error calling LLM: {e}",
+                finish_reason=_classify_llm_error(e),
             )
 
     def _parse_response(self, response: Any) -> LLMResponse:
@@ -488,17 +492,9 @@ class LiteLLMProvider(LLMProvider):
             elapsed = time.monotonic() - t0
             llm_calls_total.labels(model=resolved, role="stream", success="False").inc()
             llm_latency_seconds.labels(model=resolved, role="stream").observe(elapsed)
-            error_str = str(e)
-            exc_name = type(e).__name__
-            if "BadRequestError" in exc_name or "invalid_request" in error_str:
-                finish = "invalid_request"
-            elif "AuthenticationError" in exc_name or "401" in error_str:
-                finish = "auth_error"
-            else:
-                finish = "error"
             yield StreamChunk(
-                content_delta=f"Error calling LLM: {error_str}",
-                finish_reason=finish,
+                content_delta=f"Error calling LLM: {e}",
+                finish_reason=_classify_llm_error(e),
                 done=True,
             )
 

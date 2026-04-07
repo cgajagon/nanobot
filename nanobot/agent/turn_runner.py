@@ -648,16 +648,8 @@ def _build_error_with_progress(
     ``"error"`` (default), ``"content_filter"``, ``"length"``,
     ``"invalid_request"``, or ``"auth_error"``.
     """
-    last_user_idx = 0
-    for i, m in enumerate(state.messages):
-        if m.get("role") == "user":
-            last_user_idx = i
-
-    tool_summaries: list[str] = []
-    for m in state.messages[last_user_idx + 1 :]:
-        if m.get("role") == "tool" and m.get("name"):
-            tool_summaries.append(f"- {m['name']}")
-
+    # Non-retryable errors return immediately — no tool progress is relevant
+    # because the conversation state itself is the problem.
     if error_type == "invalid_request":
         return (
             "I encountered an error preparing the conversation for the language model. "
@@ -668,6 +660,16 @@ def _build_error_with_progress(
             "Authentication with the language model failed. "
             "Please check your API key configuration."
         )
+
+    last_user_idx = 0
+    for i, m in enumerate(state.messages):
+        if m.get("role") == "user":
+            last_user_idx = i
+
+    tool_summaries: list[str] = []
+    for m in state.messages[last_user_idx + 1 :]:
+        if m.get("role") == "tool" and m.get("name"):
+            tool_summaries.append(f"- {m['name']}")
 
     if not tool_summaries:
         if error_type == "content_filter":

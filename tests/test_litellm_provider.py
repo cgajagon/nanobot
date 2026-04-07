@@ -594,6 +594,32 @@ async def test_chat_generic_error_keeps_finish_reason_error(
     assert result.finish_reason == "error"
 
 
+@pytest.mark.asyncio
+async def test_chat_rate_limit_with_401_substring_not_misclassified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rate limit error containing '401' substring must NOT be classified as auth_error."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.RateLimitError(
+            message="Rate limit exceeded. Retry after 1401ms",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "error", (
+        "RateLimitError must be classified as 'error' (retryable), "
+        "not 'auth_error' even if message contains '401'"
+    )
+
+
 def test_sanitize_strips_orphaned_tool_result() -> None:
     """Tool result without matching assistant tool_call is stripped."""
     messages = [
