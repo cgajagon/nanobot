@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,6 +29,13 @@ class TestCronToolProperties:
     def test_parameters(self, cron_tool: CronTool):
         params = cron_tool.parameters
         assert "action" in params["properties"]
+
+    def test_message_description_signals_full_prompt(self, cron_tool: CronTool):
+        desc = cron_tool.parameters["properties"]["message"]["description"]
+        # Must NOT say "reminder" (misleads LLM into summarizing)
+        assert "reminder" not in desc.lower()
+        # Must communicate that this is the full execution prompt
+        assert "verbatim" in desc.lower() or "exact" in desc.lower() or "full" in desc.lower()
 
 
 class TestCronToolExecute:
@@ -192,6 +199,35 @@ class TestCronToolServiceGuard:
         tool.set_context(channel="test", chat_id="123")
         result = await tool.execute(action="add", message="ping", every_seconds=60)
         assert result.success
+
+
+class TestCronToolRun:
+    async def test_run_missing_job_id(self, cron_tool: CronTool):
+        result = await cron_tool.execute(action="run")
+        assert not result.success
+        assert "job_id" in result.output.lower()
+
+    async def test_run_job_not_found(self, cron_tool: CronTool):
+        cron_tool._cron.run_job = AsyncMock(return_value=False)
+        result = await cron_tool.execute(action="run", job_id="missing")
+        assert not result.success
+        assert "not found" in result.output.lower() or "failed" in result.output.lower()
+
+    async def test_run_job_success(self, cron_tool: CronTool):
+        cron_tool._cron.run_job = AsyncMock(return_value=True)
+        result = await cron_tool.execute(action="run", job_id="j1")
+        assert result.success
+        assert "j1" in result.output
+        cron_tool._cron.run_job.assert_called_once_with("j1")
+
+    async def test_run_blocked_when_not_running(self):
+        svc = MagicMock()
+        svc.is_running = False
+        tool = CronTool(cron_service=svc)
+        tool.set_context(channel="test", chat_id="123")
+        result = await tool.execute(action="run", job_id="j1")
+        assert not result.success
+        assert "not available" in result.output.lower()
 
 
 class _FakeCron:

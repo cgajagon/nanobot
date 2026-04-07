@@ -13,16 +13,23 @@ class CronTool(Tool):
     """Tool to schedule reminders and recurring tasks."""
 
     name = "cron"
-    description = "Schedule reminders and recurring tasks. Actions: add, list, remove, enable, disable, update."
+    description = "Schedule and manage recurring tasks. Actions: add, list, remove, enable, disable, update, run."
     parameters: ClassVar[dict[str, Any]] = {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "list", "remove", "enable", "disable", "update"],
+                "enum": ["add", "list", "remove", "enable", "disable", "update", "run"],
                 "description": "Action to perform",
             },
-            "message": {"type": "string", "description": "Reminder message (for add)"},
+            "message": {
+                "type": "string",
+                "description": (
+                    "The full prompt text the agent will execute when this job fires. "
+                    "Include the user's complete instructions verbatim — this is the "
+                    "only context the agent receives (for add/update)."
+                ),
+            },
             "every_seconds": {
                 "type": "integer",
                 "description": "Interval in seconds (for recurring tasks)",
@@ -67,7 +74,7 @@ class CronTool(Tool):
         tz: str | None = kwargs.pop("tz", None)
         at: str | None = kwargs.pop("at", None)
         job_id: str | None = kwargs.pop("job_id", None)
-        if action in ("add", "enable", "update") and not self._cron.is_running:
+        if action in ("add", "enable", "update", "run") and not self._cron.is_running:
             return ToolResult.fail(
                 "Cron scheduling is not available in this mode. "
                 "Use `nanobot gateway` to run the agent with cron support."
@@ -84,6 +91,8 @@ class CronTool(Tool):
             return self._enable_job(job_id, enabled=False)
         elif action == "update":
             return self._update_job(job_id, message, every_seconds, cron_expr, tz, at)
+        elif action == "run":
+            return await self._run_job(job_id)
         return ToolResult.fail(f"Unknown action: {action}")
 
     def _add_job(
@@ -238,3 +247,11 @@ class CronTool(Tool):
         if self._cron.remove_job(job_id):
             return ToolResult.ok(f"Removed job {job_id}")
         return ToolResult.fail(f"Job {job_id} not found")
+
+    async def _run_job(self, job_id: str | None) -> ToolResult:
+        if not job_id:
+            return ToolResult.fail("Error: job_id is required for run")
+        ok = await self._cron.run_job(job_id)
+        if not ok:
+            return ToolResult.fail(f"Job {job_id} not found or disabled")
+        return ToolResult.ok(f"Job {job_id} executed. Check the delivery channel for results.")
