@@ -84,10 +84,11 @@ class GraphAugmenter:
         )
         all_names = graph_entity_names | graph_related
 
-        # Look up last_seen for each entity from the graph
+        # Look up last_seen for all entities in one batch query
         result: dict[str, str] = {}
+        entity_rows = self._graph.get_entities_batch(all_names)
         for name in all_names:
-            row = self._graph.get_entity_row(name)
+            row = entity_rows.get(name)
             result[name] = str(row.get("last_seen", "")) if row else ""
 
         self._graph_cache[cache_key] = result

@@ -411,6 +411,28 @@ class KnowledgeGraph:
             return None
         return self._db.get_entity(canonical)
 
+    def get_entities_batch(self, names: set[str]) -> dict[str, dict[str, Any]]:
+        """Batch entity lookup with normalization.
+
+        Normalizes each name via ``_norm()`` before the DB query, then maps
+        results back to the original (un-normalized) names provided by the caller.
+        """
+        if not self.enabled or not names or self._db is None:
+            return {}
+        norm_to_orig: dict[str, str] = {}
+        for name in names:
+            normalized = _norm(name)
+            if normalized:
+                norm_to_orig[normalized] = name
+        if not norm_to_orig:
+            return {}
+        raw = self._db.get_entities_batch(set(norm_to_orig.keys()))
+        result: dict[str, dict[str, Any]] = {}
+        for norm_name, orig_name in norm_to_orig.items():
+            if norm_name in raw:
+                result[orig_name] = raw[norm_name]
+        return result
+
     def get_edges_from(self, source: str) -> list[dict[str, Any]]:
         """Return outgoing edges from the given canonical source."""
         if self._db is None:
