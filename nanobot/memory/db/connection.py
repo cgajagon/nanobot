@@ -59,10 +59,12 @@ class MemoryDatabase:
         if self._dims <= 0:
             raise ValueError(f"dims must be positive, got {self._dims}")
         # check_same_thread=False: safe because WAL mode allows concurrent
-        # readers, and asyncio.to_thread() only dispatches read-only methods.
+        # readers, and busy_timeout handles the rare case where asyncio.to_thread
+        # dispatches overlapping writes (micro-extraction + consolidation).
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         try:
             self._conn.enable_load_extension(True)
             sqlite_vec.load(self._conn)
