@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobot.providers.litellm_provider import LiteLLMProvider
+from nanobot.providers.sanitize import sanitize_messages
 
 
 def test_canonicalize_explicit_prefix() -> None:
@@ -28,7 +29,7 @@ def test_sanitize_messages_and_cache_control_helpers() -> None:
         {"role": "assistant", "tool_calls": [{"x": 1}], "extra": True},
         {"role": "system", "content": "sys"},
     ]
-    sanitized = provider._sanitize_messages(msgs)
+    sanitized = sanitize_messages(msgs)
     assert sanitized[0]["role"] == "assistant"
     assert "extra" not in sanitized[0]
     assert "content" in sanitized[0]
@@ -356,7 +357,6 @@ async def test_aclose_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_sanitize_repairs_orphaned_tool_calls() -> None:
     """Tool_calls without matching tool results should be stripped to avoid LLM 400 errors."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hello"},
@@ -371,7 +371,7 @@ def test_sanitize_repairs_orphaned_tool_calls() -> None:
         # Only tc_1 has a result; tc_2 is orphaned (e.g. crash mid-execution)
         {"role": "tool", "tool_call_id": "tc_1", "content": "file contents"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     # Assistant should only have tc_1
     assistant = [m for m in repaired if m.get("role") == "assistant"][0]
     assert len(assistant["tool_calls"]) == 1
@@ -380,7 +380,6 @@ def test_sanitize_repairs_orphaned_tool_calls() -> None:
 
 def test_sanitize_drops_all_tool_calls_when_none_have_results() -> None:
     """When all tool_calls are orphaned, drop the tool_calls key entirely."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "user", "content": "hello"},
         {
@@ -392,14 +391,13 @@ def test_sanitize_drops_all_tool_calls_when_none_have_results() -> None:
         },
         {"role": "user", "content": "retry"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     assistant = [m for m in repaired if m.get("role") == "assistant"][0]
     assert "tool_calls" not in assistant
 
 
 def test_sanitize_keeps_valid_tool_calls_untouched() -> None:
     """When all tool_calls have results, messages should pass through unchanged."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "user", "content": "hi"},
         {
@@ -412,7 +410,7 @@ def test_sanitize_keeps_valid_tool_calls_untouched() -> None:
         {"role": "tool", "tool_call_id": "tc_ok", "content": "result"},
         {"role": "assistant", "content": "done"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     assistant = [m for m in repaired if m.get("tool_calls")][0]
     assert len(assistant["tool_calls"]) == 1
     assert assistant["tool_calls"][0]["id"] == "tc_ok"
