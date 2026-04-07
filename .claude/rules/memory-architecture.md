@@ -416,6 +416,7 @@ Micro-extraction bypasses several steps the full path performs:
 
 | Step | Full Consolidation | Micro-Extraction |
 |------|-------------------|-----------------|
+| Trivial-turn pre-filter | N/A | Skips LLM call for acknowledgment-only user messages (≤20 chars matching `_TRIVIAL_PATTERNS`) when assistant response is also short (≤100 chars) |
 | LLM schema | Full `_SAVE_EVENTS_TOOL` | Simplified `_MICRO_EXTRACT_TOOL` (no triples, salience, confidence, ttl_days) |
 | Event construction | `EventCoercer.coerce_event()` | `MemoryEvent.from_dict()` directly |
 | ID generation | `build_event_id()` | Relies on `from_dict` defaults |
