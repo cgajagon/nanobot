@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nanobot.providers.litellm_provider import LiteLLMProvider
+from nanobot.providers.sanitize import sanitize_messages
 
 
 def test_canonicalize_explicit_prefix() -> None:
@@ -28,7 +29,7 @@ def test_sanitize_messages_and_cache_control_helpers() -> None:
         {"role": "assistant", "tool_calls": [{"x": 1}], "extra": True},
         {"role": "system", "content": "sys"},
     ]
-    sanitized = provider._sanitize_messages(msgs)
+    sanitized = sanitize_messages(msgs)
     assert sanitized[0]["role"] == "assistant"
     assert "extra" not in sanitized[0]
     assert "content" in sanitized[0]
@@ -356,7 +357,6 @@ async def test_aclose_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_sanitize_repairs_orphaned_tool_calls() -> None:
     """Tool_calls without matching tool results should be stripped to avoid LLM 400 errors."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hello"},
@@ -371,7 +371,7 @@ def test_sanitize_repairs_orphaned_tool_calls() -> None:
         # Only tc_1 has a result; tc_2 is orphaned (e.g. crash mid-execution)
         {"role": "tool", "tool_call_id": "tc_1", "content": "file contents"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     # Assistant should only have tc_1
     assistant = [m for m in repaired if m.get("role") == "assistant"][0]
     assert len(assistant["tool_calls"]) == 1
@@ -380,7 +380,6 @@ def test_sanitize_repairs_orphaned_tool_calls() -> None:
 
 def test_sanitize_drops_all_tool_calls_when_none_have_results() -> None:
     """When all tool_calls are orphaned, drop the tool_calls key entirely."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "user", "content": "hello"},
         {
@@ -392,14 +391,13 @@ def test_sanitize_drops_all_tool_calls_when_none_have_results() -> None:
         },
         {"role": "user", "content": "retry"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     assistant = [m for m in repaired if m.get("role") == "assistant"][0]
     assert "tool_calls" not in assistant
 
 
 def test_sanitize_keeps_valid_tool_calls_untouched() -> None:
     """When all tool_calls have results, messages should pass through unchanged."""
-    provider = LiteLLMProvider(api_key=None)
     msgs = [
         {"role": "user", "content": "hi"},
         {
@@ -412,7 +410,7 @@ def test_sanitize_keeps_valid_tool_calls_untouched() -> None:
         {"role": "tool", "tool_call_id": "tc_ok", "content": "result"},
         {"role": "assistant", "content": "done"},
     ]
-    repaired = provider._sanitize_messages(msgs)
+    repaired = sanitize_messages(msgs)
     assistant = [m for m in repaired if m.get("tool_calls")][0]
     assert len(assistant["tool_calls"]) == 1
     assert assistant["tool_calls"][0]["id"] == "tc_ok"
@@ -534,3 +532,165 @@ async def test_stream_chat_omits_api_key_for_cross_provider_model(
     ):
         pass
     assert "api_key" not in captured_kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_invalid_request_sets_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BadRequestError sets finish_reason='invalid_request', not 'error'."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.BadRequestError(
+            message="invalid_request_error: orphaned tool_result",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_chat_auth_error_sets_finish_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AuthenticationError sets finish_reason='auth_error', not 'error'."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.AuthenticationError(
+            message="invalid api key",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "auth_error"
+
+
+@pytest.mark.asyncio
+async def test_chat_generic_error_keeps_finish_reason_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown exceptions keep finish_reason='error' (existing behavior)."""
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "error"
+
+
+@pytest.mark.asyncio
+async def test_chat_rate_limit_with_401_substring_not_misclassified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rate limit error containing '401' substring must NOT be classified as auth_error."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.RateLimitError(
+            message="Rate limit exceeded. Retry after 1401ms",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="anthropic/claude-haiku-4-5",
+    )
+    assert result.finish_reason == "error", (
+        "RateLimitError must be classified as 'error' (retryable), "
+        "not 'auth_error' even if message contains '401'"
+    )
+
+
+def test_sanitize_strips_orphaned_tool_result() -> None:
+    """Tool result without matching assistant tool_call is stripped."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "tool", "tool_call_id": "orphan_id", "name": "exec", "content": "result"},
+        {"role": "assistant", "content": "response"},
+    ]
+    result = sanitize_messages(messages)
+    roles = [m["role"] for m in result]
+    assert "tool" not in roles, "Orphaned tool result should be stripped"
+    assert len(result) == 2
+
+
+def test_sanitize_keeps_paired_tool_result() -> None:
+    """Tool result with matching assistant tool_call is preserved."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tc_1",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc_1", "name": "exec", "content": "result"},
+        {"role": "assistant", "content": "done"},
+    ]
+    result = sanitize_messages(messages)
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "tc_1"
+
+
+def test_sanitize_bidirectional_repair() -> None:
+    """Both orphaned tool_calls and orphaned tool_results are stripped."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "tool", "tool_call_id": "orphan_result", "name": "exec", "content": "r1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "orphan_call",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "valid_1",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "valid_1", "name": "exec", "content": "r2"},
+    ]
+    result = sanitize_messages(messages)
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "valid_1"
+    for m in result:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ids = [tc["id"] for tc in m["tool_calls"]]
+            assert "orphan_call" not in ids

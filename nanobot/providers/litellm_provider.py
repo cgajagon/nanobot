@@ -13,9 +13,21 @@ from nanobot.errors import BudgetExceededError
 from nanobot.metrics import llm_calls_total, llm_latency_seconds
 from nanobot.providers.base import LLMProvider, LLMResponse, StreamChunk, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
+from nanobot.providers.sanitize import sanitize_messages
 
-# Standard OpenAI chat-completion message keys; extras (e.g. reasoning_content) are stripped for strict providers.
-_ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
+
+def _classify_llm_error(exc: Exception) -> str:
+    """Classify an LLM exception into a finish_reason value.
+
+    Uses ``isinstance`` for type-safe matching against litellm's exception
+    hierarchy. Falls back to ``"error"`` for unknown exception types, which
+    triggers the existing retry-with-backoff path in the turn runner.
+    """
+    if isinstance(exc, litellm.BadRequestError):
+        return "invalid_request"
+    if isinstance(exc, litellm.AuthenticationError):
+        return "auth_error"
+    return "error"
 
 
 class LiteLLMProvider(LLMProvider):
@@ -207,43 +219,6 @@ class LiteLLMProvider(LLMProvider):
                     kwargs.update(overrides)
                     return
 
-    @staticmethod
-    def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Strip non-standard keys, ensure content key, and repair orphaned tool_calls."""
-        sanitized = []
-        for msg in messages:
-            clean = {k: v for k, v in msg.items() if k in _ALLOWED_MSG_KEYS}
-            # Strict providers require "content" even when assistant only has tool_calls
-            if clean.get("role") == "assistant" and "content" not in clean:
-                clean["content"] = None
-            sanitized.append(clean)
-
-        # Repair orphaned tool_calls: every tool_call_id in an assistant message
-        # must have a following tool-role message with the same tool_call_id.
-        # If a crash interrupted tool execution, the result messages may be missing.
-        tool_result_ids: set[str] = {
-            m["tool_call_id"] for m in sanitized if m.get("role") == "tool" and "tool_call_id" in m
-        }
-        repaired = []
-        for msg in sanitized:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                orphaned = [
-                    tc
-                    for tc in msg["tool_calls"]
-                    if tc.get("id") and tc["id"] not in tool_result_ids
-                ]
-                if orphaned:
-                    # Keep only tool_calls that have matching results
-                    valid = [tc for tc in msg["tool_calls"] if tc["id"] in tool_result_ids]
-                    if valid:
-                        repaired.append({**msg, "tool_calls": valid})
-                    else:
-                        # No valid tool_calls remain — drop them entirely
-                        repaired.append({k: v for k, v in msg.items() if k != "tool_calls"})
-                    continue
-            repaired.append(msg)
-        return repaired
-
     async def chat(
         self,
         messages: list[dict[str, Any]],
@@ -278,7 +253,7 @@ class LiteLLMProvider(LLMProvider):
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
+            "messages": sanitize_messages(self._sanitize_empty_content(messages)),
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
@@ -329,10 +304,9 @@ class LiteLLMProvider(LLMProvider):
             elapsed = time.monotonic() - t0
             llm_calls_total.labels(model=model, role="chat", success="False").inc()
             llm_latency_seconds.labels(model=model, role="chat").observe(elapsed)
-            # Return error as content for graceful handling
             return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
+                content=f"Error calling LLM: {e}",
+                finish_reason=_classify_llm_error(e),
             )
 
     def _parse_response(self, response: Any) -> LLMResponse:
@@ -408,7 +382,7 @@ class LiteLLMProvider(LLMProvider):
 
         kwargs: dict[str, Any] = {
             "model": resolved,
-            "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
+            "messages": sanitize_messages(self._sanitize_empty_content(messages)),
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
@@ -520,7 +494,7 @@ class LiteLLMProvider(LLMProvider):
             llm_latency_seconds.labels(model=resolved, role="stream").observe(elapsed)
             yield StreamChunk(
                 content_delta=f"Error calling LLM: {e}",
-                finish_reason="error",
+                finish_reason=_classify_llm_error(e),
                 done=True,
             )
 

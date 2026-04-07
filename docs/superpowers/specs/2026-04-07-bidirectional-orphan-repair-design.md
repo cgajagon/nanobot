@@ -467,3 +467,12 @@ addresses the `litellm_provider.py` 535 LOC concern).
 - **`providers/sanitize.py` new file.** Adds one file to the `providers/`
   package (currently 9 files; limit is 15). The file is small (~65 LOC),
   single-purpose, and avoids the catch-all `utils.py` anti-pattern.
+
+## Deviations
+
+| Spec Section | Deviation | Reason |
+|---|---|---|
+| Fix 4a code example | Implementation uses `isinstance(exc, litellm.BadRequestError)` instead of string parsing (`"BadRequestError" in exc_name`) | Type-safe matching against litellm's exception hierarchy; eliminates false-positive risk from substring collisions (e.g., "401" in rate-limit messages) |
+| Fix 4a `rate_limit` | `rate_limit` finish_reason not implemented; rate limit errors fall through to generic `"error"` | Acceptable per spec ("existing behavior is acceptable"); reduces scope |
+| Fix 4a duplication | Error classification extracted to shared `_classify_llm_error()` helper | Eliminates code duplication between `chat()` and `stream_chat()` exception handlers |
+| Risks: "string parsing" | No longer applies | Replaced by `isinstance` checks per deviation above |
