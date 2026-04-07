@@ -443,18 +443,20 @@ Query text
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
-│  Stage 2: EMBED                                      │
-│  embedder.embed(query) -> float[dims]                │
-│  Single async call                                   │
+│  Stage 2: EMBED + FTS (concurrent)                   │
+│  asyncio.gather(                                     │
+│    embedder.embed(query),                            │
+│    to_thread(search_fts, query, candidate_k),        │
+│  )                                                   │
+│  FTS runs concurrently with embed API call            │
+│  candidate_k = top_k * multiplier, capped at 60      │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
-│  Stage 3: DUAL SEARCH (concurrent)                   │
-│  asyncio.gather(                                     │
-│    to_thread(search_vector, query_vec, candidate_k), │
-│    to_thread(search_fts, query, candidate_k),        │
-│  )                                                   │
-│  candidate_k = top_k * multiplier, capped at 60      │
+│  Stage 3: VECTOR SEARCH (conditional)                │
+│  if embed succeeded:                                 │
+│    to_thread(search_vector, query_vec, candidate_k)  │
+│  else: vec_results = [] (FTS-only degradation)       │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐

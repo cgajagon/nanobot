@@ -160,7 +160,9 @@ class MemoryRetriever:
             try:
                 return await embedder.embed(query)
             except Exception:  # crash-barrier: degrade to FTS-only on embed failure
-                bind_trace().warning("Embedding failed, falling back to FTS-only retrieval")
+                bind_trace().opt(exception=True).warning(
+                    "Embedding failed, falling back to FTS-only retrieval"
+                )
                 return None
 
         query_vec, fts_results = await asyncio.gather(
