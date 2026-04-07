@@ -15,7 +15,11 @@ _ALLOWED_MSG_KEYS: frozenset[str] = frozenset(
 
 
 def sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Strip non-standard keys, ensure content key, and repair orphaned tool_calls.
+    """Strip non-standard keys, ensure content key, and repair orphaned tool messages.
+
+    Bidirectional orphan repair:
+    - Forward: strip assistant tool_calls that lack matching tool results.
+    - Reverse: strip tool results that lack matching assistant tool_calls.
 
     This is the single authoritative location for message sanitization before
     LLM API calls. Called by LiteLLMProvider.chat() and stream_chat().
@@ -47,4 +51,21 @@ def sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     repaired.append({k: v for k, v in msg.items() if k != "tool_calls"})
                 continue
         repaired.append(msg)
-    return repaired
+    # Reverse repair: strip tool results without matching assistant tool_calls.
+    # This catches orphans from session truncation, compression, or corrupted data.
+    assistant_tc_ids: set[str] = set()
+    for msg in repaired:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("id"):
+                    assistant_tc_ids.add(tc["id"])
+
+    return [
+        msg
+        for msg in repaired
+        if not (
+            msg.get("role") == "tool"
+            and msg.get("tool_call_id")
+            and msg["tool_call_id"] not in assistant_tc_ids
+        )
+    ]

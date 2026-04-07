@@ -532,3 +532,79 @@ async def test_stream_chat_omits_api_key_for_cross_provider_model(
     ):
         pass
     assert "api_key" not in captured_kwargs
+
+
+def test_sanitize_strips_orphaned_tool_result() -> None:
+    """Tool result without matching assistant tool_call is stripped."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "tool", "tool_call_id": "orphan_id", "name": "exec", "content": "result"},
+        {"role": "assistant", "content": "response"},
+    ]
+    result = sanitize_messages(messages)
+    roles = [m["role"] for m in result]
+    assert "tool" not in roles, "Orphaned tool result should be stripped"
+    assert len(result) == 2
+
+
+def test_sanitize_keeps_paired_tool_result() -> None:
+    """Tool result with matching assistant tool_call is preserved."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "tc_1",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "tc_1", "name": "exec", "content": "result"},
+        {"role": "assistant", "content": "done"},
+    ]
+    result = sanitize_messages(messages)
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "tc_1"
+
+
+def test_sanitize_bidirectional_repair() -> None:
+    """Both orphaned tool_calls and orphaned tool_results are stripped."""
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "tool", "tool_call_id": "orphan_result", "name": "exec", "content": "r1"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "orphan_call",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "valid_1",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "valid_1", "name": "exec", "content": "r2"},
+    ]
+    result = sanitize_messages(messages)
+    tool_msgs = [m for m in result if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0]["tool_call_id"] == "valid_1"
+    for m in result:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            ids = [tc["id"] for tc in m["tool_calls"]]
+            assert "orphan_call" not in ids
