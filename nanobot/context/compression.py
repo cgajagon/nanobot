@@ -85,6 +85,34 @@ def _collect_tail_tool_call_ids(tail: list[dict[str, Any]]) -> set[str]:
     return ids
 
 
+def _strip_tail_orphans(
+    middle: list[dict[str, Any]],
+    tail: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Strip tool results from *tail* whose tool_call is not in middle or tail.
+
+    After ``_paired_drop_tools`` filters the middle and Phase 3 may
+    drop/summarize it entirely, tool results in the tail can become orphaned
+    if their matching assistant tool_calls was in the (now-dropped) middle.
+    """
+    all_call_ids: set[str] = set()
+    for m in middle + tail:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            for tc in m["tool_calls"]:
+                if tc.get("id"):
+                    all_call_ids.add(tc["id"])
+
+    return [
+        m
+        for m in tail
+        if not (
+            m.get("role") == "tool"
+            and m.get("tool_call_id")
+            and m["tool_call_id"] not in all_call_ids
+        )
+    ]
+
+
 def _paired_drop_tools(
     middle: list[dict[str, Any]],
     tail: list[dict[str, Any]],
@@ -188,6 +216,7 @@ def compress_context(
 
     # Phase 2: drop tool results from middle, preserving claim-evidence coherence
     middle = _paired_drop_tools(middle, tail)
+    tail = _strip_tail_orphans(middle, tail)
 
     trial = system + middle + tail
     if estimate_messages_tokens(trial) <= max_tokens:
@@ -271,6 +300,7 @@ async def summarize_and_compress(
 
     # Phase 2: drop tool results from middle, preserving claim-evidence coherence
     middle_no_tools = _paired_drop_tools(middle, tail)
+    tail = _strip_tail_orphans(middle_no_tools, tail)
 
     trial = system + middle_no_tools + tail
     if estimate_messages_tokens(trial) <= max_tokens:

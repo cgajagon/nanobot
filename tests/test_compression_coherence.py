@@ -240,3 +240,72 @@ class TestDynamicPreserveRecent:
     def test_custom_floor(self) -> None:
         msgs = [{"role": "user", "content": f"m{i}"} for i in range(3)]
         assert _dynamic_preserve_recent(msgs, floor=10) == 10
+
+
+# ---------------------------------------------------------------------------
+# _strip_tail_orphans
+# ---------------------------------------------------------------------------
+
+
+class TestTailOrphanVerification:
+    """Tests for tail orphan protection after _paired_drop_tools."""
+
+    def test_tail_result_with_call_in_tail_preserved(self) -> None:
+        """Tool result in tail with matching call in tail is kept."""
+        middle: list[dict] = [{"role": "user", "content": "old"}]
+        tail: list[dict] = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "tc_1", "type": "function", "function": {"name": "f"}}],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ]
+        from nanobot.context.compression import _strip_tail_orphans
+
+        cleaned = _strip_tail_orphans(middle, tail)
+        assert len([m for m in cleaned if m.get("role") == "tool"]) == 1
+
+    def test_tail_result_with_call_in_middle_preserved(self) -> None:
+        """Tool result in tail with matching call still in middle is kept."""
+        middle: list[dict] = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "tc_1", "type": "function", "function": {"name": "f"}}],
+            },
+        ]
+        tail: list[dict] = [
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+            {"role": "user", "content": "next"},
+        ]
+        from nanobot.context.compression import _strip_tail_orphans
+
+        cleaned = _strip_tail_orphans(middle, tail)
+        tool_msgs = [m for m in cleaned if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+
+    def test_tail_result_with_call_nowhere_stripped(self) -> None:
+        """Tool result in tail with no matching call anywhere is stripped."""
+        middle: list[dict] = [{"role": "user", "content": "old"}]
+        tail: list[dict] = [
+            {"role": "tool", "tool_call_id": "orphan_tc", "content": "result"},
+            {"role": "user", "content": "next"},
+        ]
+        from nanobot.context.compression import _strip_tail_orphans
+
+        cleaned = _strip_tail_orphans(middle, tail)
+        tool_msgs = [m for m in cleaned if m.get("role") == "tool"]
+        assert len(tool_msgs) == 0
+
+    def test_tail_non_tool_messages_untouched(self) -> None:
+        """Non-tool messages in tail are never stripped."""
+        middle: list[dict] = []
+        tail: list[dict] = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
+        from nanobot.context.compression import _strip_tail_orphans
+
+        cleaned = _strip_tail_orphans(middle, tail)
+        assert len(cleaned) == 2
