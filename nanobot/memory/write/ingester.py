@@ -120,11 +120,19 @@ class EventIngester:
                 merged += 1
                 continue
 
-            # Step 2: Supersession — FTS5 pre-filter then existing logic
+            # Pre-fetch FTS candidates once — reused for both supersession and dedup.
+            # memory_type_for_item is a pure function on the candidate dict, so
+            # is_semantic is stable across steps 2 and 3.
             candidate_vec = embeddings.get(event_id) if embeddings else None
-            supersession_found = False
-            if memory_type_for_item(candidate) == "semantic":
+            is_semantic = memory_type_for_item(candidate) == "semantic"
+            fts_candidates: list[dict[str, Any]] = []
+            fts_vectors: dict[str, list[float]] = {}
+            if is_semantic:
                 fts_candidates, fts_vectors = self._find_dedup_candidates(candidate, limit=30)
+
+            # Step 2: Supersession — semantic events only
+            supersession_found = False
+            if is_semantic:
                 semantic_candidates = [
                     c
                     for c in fts_candidates
@@ -154,9 +162,10 @@ class EventIngester:
                         superseded += 1
                         supersession_found = True
 
-            # Step 3: Semantic duplicate — FTS5 pre-filter + Jaccard
+            # Step 3: Semantic duplicate — reuses FTS candidates from step 2
             if not supersession_found:
-                fts_candidates, fts_vectors = self._find_dedup_candidates(candidate, limit=30)
+                if not fts_candidates:
+                    fts_candidates, fts_vectors = self._find_dedup_candidates(candidate, limit=30)
                 if fts_candidates:
                     dup_idx, dup_score = self._dedup.find_semantic_duplicate(
                         candidate,

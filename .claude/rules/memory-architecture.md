@@ -416,6 +416,7 @@ Micro-extraction bypasses several steps the full path performs:
 
 | Step | Full Consolidation | Micro-Extraction |
 |------|-------------------|-----------------|
+| Trivial-turn pre-filter | N/A | Skips LLM call for acknowledgment-only user messages (≤20 chars matching `_TRIVIAL_PATTERNS`) when assistant response is also short (≤100 chars) |
 | LLM schema | Full `_SAVE_EVENTS_TOOL` | Simplified `_MICRO_EXTRACT_TOOL` (no triples, salience, confidence, ttl_days) |
 | Event construction | `EventCoercer.coerce_event()` | `MemoryEvent.from_dict()` directly |
 | ID generation | `build_event_id()` | Relies on `from_dict` defaults |
@@ -443,18 +444,20 @@ Query text
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
-│  Stage 2: EMBED                                      │
-│  embedder.embed(query) -> float[dims]                │
-│  Single async call                                   │
+│  Stage 2: EMBED + FTS (concurrent)                   │
+│  asyncio.gather(                                     │
+│    embedder.embed(query),                            │
+│    to_thread(search_fts, query, candidate_k),        │
+│  )                                                   │
+│  FTS runs concurrently with embed API call            │
+│  candidate_k = top_k * multiplier, capped at 60      │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
-│  Stage 3: DUAL SEARCH (concurrent)                   │
-│  asyncio.gather(                                     │
-│    to_thread(search_vector, query_vec, candidate_k), │
-│    to_thread(search_fts, query, candidate_k),        │
-│  )                                                   │
-│  candidate_k = top_k * multiplier, capped at 60      │
+│  Stage 3: VECTOR SEARCH (conditional)                │
+│  if embed succeeded:                                 │
+│    to_thread(search_vector, query_vec, candidate_k)  │
+│  else: vec_results = [] (FTS-only degradation)       │
 └───────────────────────────┬─────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────┐
