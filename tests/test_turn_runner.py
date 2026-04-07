@@ -505,3 +505,66 @@ class TestSelfCheck:
         assert result.content == "My answer"
         assert provider.chat.call_count == 0
         assert result.llm_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# TestLLMErrorClassification
+# ---------------------------------------------------------------------------
+
+
+class TestLLMErrorClassification:
+    """Tests for non-retryable error handling (invalid_request, auth_error)."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_request_fails_fast(self) -> None:
+        """invalid_request finish_reason breaks immediately, no retries."""
+        responses = [
+            LLMResponse(
+                content="Error calling LLM: BadRequestError: orphaned tool_result",
+                finish_reason="invalid_request",
+            ),
+        ]
+        caller = ScriptedCaller(responses)
+        runner = _build_runner(caller)
+        state = _make_state()
+
+        result = await runner.run(state, on_progress=None)
+
+        assert caller.call_count == 1, "Should not retry invalid_request"
+        assert "error preparing the conversation" in result.content
+
+    @pytest.mark.asyncio
+    async def test_auth_error_fails_fast(self) -> None:
+        """auth_error finish_reason breaks immediately, no retries."""
+        responses = [
+            LLMResponse(
+                content="Error calling LLM: AuthenticationError: invalid key",
+                finish_reason="auth_error",
+            ),
+        ]
+        caller = ScriptedCaller(responses)
+        runner = _build_runner(caller)
+        state = _make_state()
+
+        result = await runner.run(state, on_progress=None)
+
+        assert caller.call_count == 1, "Should not retry auth_error"
+        assert "API key" in result.content
+
+    @pytest.mark.asyncio
+    async def test_generic_error_still_retries(self) -> None:
+        """Generic 'error' finish_reason retries with backoff (existing behavior)."""
+        error_resp = LLMResponse(
+            content="Error calling LLM: ConnectionError",
+            finish_reason="error",
+        )
+        success_resp = LLMResponse(content="recovered", finish_reason="stop")
+        responses = [error_resp, success_resp]
+        caller = ScriptedCaller(responses)
+        runner = _build_runner(caller)
+        state = _make_state()
+
+        result = await runner.run(state, on_progress=None)
+
+        assert caller.call_count == 2, "Generic errors should retry"
+        assert result.content == "recovered"

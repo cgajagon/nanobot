@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from nanobot.session.manager import Session, SessionManager
 
@@ -217,3 +218,213 @@ class TestSession:
         history = s.get_history()
         assistant = [m for m in history if m.get("role") == "assistant"][0]
         assert "tool_calls" not in assistant
+
+    def test_get_history_empty_unconsolidated(self):
+        """Empty or fully consolidated session returns empty history."""
+        session = Session(key="test")
+        session.messages = []
+        assert session.get_history() == []
+        # Also test fully consolidated
+        session.messages = [{"role": "user", "content": "old"}]
+        session.last_consolidated = 1
+        assert session.get_history() == []
+
+    def test_get_history_boundary_slicing_finds_user(self):
+        """Window walks back to nearest user message for clean boundary."""
+        session = Session(key="test")
+        session.messages = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "name": "f", "content": "r1"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_2",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "name": "f", "content": "r2"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_3",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_3", "name": "f", "content": "r3"},
+            {"role": "assistant", "content": "final"},
+        ]
+        history = session.get_history(max_messages=5)
+        assert history[0]["role"] == "user"
+        tool_ids = {m["tool_call_id"] for m in history if m.get("role") == "tool"}
+        asst_ids: set[str] = set()
+        for m in history:
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    asst_ids.add(tc["id"])
+        assert tool_ids <= asst_ids, "All tool results must have matching tool_calls"
+
+    def test_get_history_boundary_slicing_finds_standalone_assistant(self):
+        """Window walks back to standalone assistant when no user in range."""
+        session = Session(key="test")
+        session.messages = [
+            {"role": "assistant", "content": "standalone"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "name": "f", "content": "r1"},
+            {"role": "assistant", "content": "done"},
+        ]
+        history = session.get_history(max_messages=3)
+        assert history[0]["role"] == "assistant"
+        assert history[0]["content"] == "standalone"
+
+    def test_get_history_boundary_no_clean_boundary_returns_empty(self):
+        """No user or standalone assistant -> empty history."""
+        session = Session(key="test")
+        session.messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "name": "f", "content": "r1"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_2",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "name": "f", "content": "r2"},
+        ]
+        history = session.get_history(max_messages=2)
+        assert history == []
+
+    def test_get_history_boundary_forward_scan_finds_user(self):
+        """Forward scan finds user message when backward scan exhausts."""
+        session = Session(key="test")
+        # All messages before target_start are tool-call cycles (no clean boundary)
+        # but a user message exists after target_start
+        session.messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_0",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_0", "name": "f", "content": "r0"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "name": "f", "content": "r1"},
+            # This user message is AFTER target_start (forward scan territory)
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_2",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "name": "f", "content": "r2"},
+            {"role": "assistant", "content": "done"},
+        ]
+        # max_messages=5 -> target_start=3. Backward scan from 3 finds only
+        # tool-call assistants and tool results. Forward scan finds user at index 4.
+        history = session.get_history(max_messages=5)
+        assert len(history) > 0, "Forward scan should find the user message"
+        assert history[0]["role"] == "user"
+        assert history[0]["content"] == "hello"
+
+    def test_get_history_boundary_preserves_complete_cycles(self):
+        """Boundary slicing never orphans tool results."""
+        session = Session(key="test")
+        msgs: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
+        for i in range(15):
+            tc_id = f"tc_{i}"
+            msgs.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": "exec", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            msgs.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": "exec",
+                    "content": f"result_{i}",
+                }
+            )
+        msgs.append({"role": "assistant", "content": "final answer"})
+        session.messages = msgs
+
+        history = session.get_history(max_messages=25)
+        tool_ids = {m["tool_call_id"] for m in history if m.get("role") == "tool"}
+        asst_ids: set[str] = set()
+        for m in history:
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    asst_ids.add(tc["id"])
+        assert tool_ids <= asst_ids, f"Orphaned tool results: {tool_ids - asst_ids}"
