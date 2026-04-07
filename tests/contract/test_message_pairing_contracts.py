@@ -7,6 +7,7 @@ matching assistant tool_calls).
 
 from __future__ import annotations
 
+from nanobot.context.compression import compress_context
 from nanobot.providers.sanitize import sanitize_messages
 from nanobot.session.manager import Session
 
@@ -135,3 +136,51 @@ class TestMessagePairingInvariant:
         history = session.get_history(max_messages=4)
         sanitized = sanitize_messages(history)
         _assert_no_orphaned_tool_results(sanitized)
+
+    def test_full_pipeline_with_compression(self):
+        """Session truncation + sync compression never produces orphaned tool results."""
+        session = Session(key="test")
+        # Build a session with enough messages to trigger both truncation and compression
+        session.messages = [{"role": "user", "content": "start"}]
+        for i in range(20):
+            tc_id = f"toolu_{i:04d}"
+            session.messages.append(
+                {
+                    "role": "assistant",
+                    "content": f"Let me check item {i}",
+                    "tool_calls": [
+                        {
+                            "id": tc_id,
+                            "type": "function",
+                            "function": {"name": "exec", "arguments": "{}"},
+                        }
+                    ],
+                }
+            )
+            session.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc_id,
+                    "name": "exec",
+                    "content": f"Result for item {i}: " + "x" * 200,
+                }
+            )
+        session.messages.append({"role": "assistant", "content": "All done."})
+        # 43 messages total
+
+        # Step 1: Session truncation
+        history = session.get_history(max_messages=25)
+
+        # Step 2: Build message list (simulate what build_messages does)
+        messages = [{"role": "system", "content": "You are helpful."}] + history
+
+        # Step 3: Compression (sync path, tight budget to force dropping)
+        compressed = compress_context(messages, max_tokens=2000)
+
+        # Step 4: Sanitize (last gate before API)
+        final = sanitize_messages(compressed)
+
+        # Invariant: no orphaned tool results at any stage
+        _assert_no_orphaned_tool_results(history)
+        _assert_no_orphaned_tool_results(compressed)
+        _assert_no_orphaned_tool_results(final)

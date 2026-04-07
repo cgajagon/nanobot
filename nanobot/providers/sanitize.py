@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = ["sanitize_messages"]
+
 # Keys that LLM APIs accept in message dicts. Everything else is stripped.
 _ALLOWED_MSG_KEYS: frozenset[str] = frozenset(
     {"role", "content", "tool_calls", "tool_call_id", "name"}

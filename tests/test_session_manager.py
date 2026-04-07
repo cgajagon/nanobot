@@ -337,6 +337,59 @@ class TestSession:
         history = session.get_history(max_messages=2)
         assert history == []
 
+    def test_get_history_boundary_forward_scan_finds_user(self):
+        """Forward scan finds user message when backward scan exhausts."""
+        session = Session(key="test")
+        # All messages before target_start are tool-call cycles (no clean boundary)
+        # but a user message exists after target_start
+        session.messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_0",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_0", "name": "f", "content": "r0"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "name": "f", "content": "r1"},
+            # This user message is AFTER target_start (forward scan territory)
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "tc_2",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_2", "name": "f", "content": "r2"},
+            {"role": "assistant", "content": "done"},
+        ]
+        # max_messages=5 -> target_start=3. Backward scan from 3 finds only
+        # tool-call assistants and tool results. Forward scan finds user at index 4.
+        history = session.get_history(max_messages=5)
+        assert len(history) > 0, "Forward scan should find the user message"
+        assert history[0]["role"] == "user"
+        assert history[0]["content"] == "hello"
+
     def test_get_history_boundary_preserves_complete_cycles(self):
         """Boundary slicing never orphans tool results."""
         session = Session(key="test")
