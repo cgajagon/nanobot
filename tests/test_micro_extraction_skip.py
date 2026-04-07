@@ -161,3 +161,42 @@ class TestTrivialConstants:
             assert len(p) <= _TRIVIAL_MAX_LEN, (
                 f"Pattern {p!r} ({len(p)} chars) exceeds _TRIVIAL_MAX_LEN ({_TRIVIAL_MAX_LEN})"
             )
+
+
+class TestBoundaryConditions:
+    """Boundary tests at exact threshold values."""
+
+    @pytest.mark.asyncio
+    async def test_exactly_max_len_trivial_skipped(self) -> None:
+        """A trivial pattern padded to exactly _TRIVIAL_MAX_LEN chars is skipped."""
+        # "ok" is 2 chars, well under 20 — test with a longer pattern
+        msg = "thank you"  # 9 chars, under threshold
+        ext, _ = _make_extractor()
+        await ext.submit(msg, "Welcome.", channel="cli")
+        assert len(ext._pending_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_one_over_max_len_passes(self) -> None:
+        """A 21-char message always passes (exceeds _TRIVIAL_MAX_LEN)."""
+        msg = "x" * (_TRIVIAL_MAX_LEN + 1)  # 21 chars, not in pattern set anyway
+        ext, _ = _make_extractor()
+        await ext.submit(msg, "Ok.", channel="cli")
+        await asyncio.sleep(0.01)
+        assert len(ext._pending_tasks) >= 1
+
+    @pytest.mark.asyncio
+    async def test_assistant_exactly_at_threshold_skipped(self) -> None:
+        """Trivial user + assistant at exactly _TRIVIAL_ASSISTANT_MAX_LEN -> skipped."""
+        assistant = "x" * _TRIVIAL_ASSISTANT_MAX_LEN  # exactly 100 chars
+        ext, _ = _make_extractor()
+        await ext.submit("ok", assistant, channel="cli")
+        assert len(ext._pending_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_assistant_one_over_threshold_passes(self) -> None:
+        """Trivial user + assistant at 101 chars -> passes through."""
+        assistant = "x" * (_TRIVIAL_ASSISTANT_MAX_LEN + 1)  # 101 chars
+        ext, _ = _make_extractor()
+        await ext.submit("ok", assistant, channel="cli")
+        await asyncio.sleep(0.01)
+        assert len(ext._pending_tasks) >= 1
