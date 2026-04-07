@@ -85,6 +85,54 @@ _MICRO_EXTRACT_TOOL: list[dict[str, Any]] = [
 ]
 
 
+_TRIVIAL_PATTERNS: frozenset[str] = frozenset(
+    {
+        "ok",
+        "okay",
+        "yes",
+        "no",
+        "yep",
+        "nope",
+        "sure",
+        "thanks",
+        "thank you",
+        "ty",
+        "thx",
+        "got it",
+        "sounds good",
+        "perfect",
+        "great",
+        "good",
+        "nice",
+        "cool",
+        "right",
+        "agreed",
+        "exactly",
+        "correct",
+        "understood",
+        "k",
+        "kk",
+        "yea",
+        "yeah",
+        "nah",
+        "fine",
+        "done",
+        "next",
+        "continue",
+        "go ahead",
+        "proceed",
+        "lgtm",
+        "\U0001f44d",
+        "\U0001f44e",
+        "\u2705",
+        "\u274c",
+    }
+)
+
+_TRIVIAL_MAX_LEN: int = 20
+_TRIVIAL_ASSISTANT_MAX_LEN: int = 100
+
+
 def build_source(channel: str, tool_hints: list[str]) -> str:
     """Build a provenance source string from channel and tool hints.
 
@@ -132,6 +180,18 @@ class MicroExtractor:
     ) -> None:
         """Submit a turn for background extraction. Returns immediately."""
         if not self._enabled:
+            return
+        # Pre-filter: skip trivial turns that never produce memory events
+        stripped = user_message.strip()
+        if not stripped:
+            logger.debug("Micro-extraction: skipped empty turn")
+            return
+        if (
+            len(stripped) <= _TRIVIAL_MAX_LEN
+            and stripped.lower().rstrip("!.,?") in _TRIVIAL_PATTERNS
+            and len(assistant_message.strip()) <= _TRIVIAL_ASSISTANT_MAX_LEN
+        ):
+            logger.debug("Micro-extraction: skipped trivial turn ({!r})", stripped[:30])
             return
         task = asyncio.create_task(
             self._extract_and_ingest(
