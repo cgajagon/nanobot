@@ -66,13 +66,43 @@ class Session:
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
         """Return unconsolidated messages for LLM input, aligned to a user turn."""
         unconsolidated = self.messages[self.last_consolidated :]
-        sliced = unconsolidated[-max_messages:]
 
-        # Drop leading non-user messages to avoid orphaned tool_result blocks
-        for i, m in enumerate(sliced):
-            if m.get("role") == "user":
-                sliced = sliced[i:]
+        if not unconsolidated:
+            return []
+
+        # Boundary-aware slicing: find a clean message boundary to avoid
+        # orphaning tool results whose matching assistant tool_calls are
+        # outside the window. A "clean boundary" is a user message or a
+        # standalone assistant (no tool_calls) — neither is mid-cycle.
+        target_start = max(0, len(unconsolidated) - max_messages)
+        boundary = target_start
+        for i in range(target_start, -1, -1):
+            m = unconsolidated[i]
+            role = m.get("role")
+            if role == "user":
+                boundary = i
                 break
+            if role == "assistant" and not m.get("tool_calls"):
+                boundary = i
+                break
+        else:
+            # No clean boundary behind target — scan forward for any
+            # standalone assistant after target_start
+            found = False
+            for i in range(target_start, len(unconsolidated)):
+                m = unconsolidated[i]
+                if m.get("role") == "user":
+                    boundary = i
+                    found = True
+                    break
+                if m.get("role") == "assistant" and not m.get("tool_calls"):
+                    boundary = i
+                    found = True
+                    break
+            if not found:
+                boundary = len(unconsolidated)  # yields empty slice
+
+        sliced = unconsolidated[boundary:]
 
         out: list[dict[str, Any]] = []
         id_remap: dict[str, str] = {}  # long ID → deterministic short ID
