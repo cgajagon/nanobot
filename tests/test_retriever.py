@@ -853,3 +853,89 @@ class TestAsyncRetrieve:
         # Neither db nor embedder set — should return []
         results = await retriever.retrieve("anything", top_k=3)
         assert results == []
+
+
+class TestEmbedFailureDegradation:
+    """When embed() raises, retrieval falls back to FTS-only results."""
+
+    async def test_embed_failure_returns_fts_results(self) -> None:
+        """Embed raises -> FTS results still returned, search_vector not called."""
+        retriever = _make_retriever()
+
+        mock_db = MagicMock()
+        mock_db.search_fts = MagicMock(
+            return_value=[
+                {
+                    "id": "f1",
+                    "type": "fact",
+                    "summary": "fts hit survives embed failure",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "entities": [],
+                    "status": "active",
+                },
+            ]
+        )
+        mock_db.search_vector = MagicMock(return_value=[])
+        mock_db.read_events = MagicMock(return_value=[])
+
+        mock_embedder = MagicMock()
+        mock_embedder.vector_quality = 0.7
+
+        async def _failing_embed(text: str) -> list[float]:
+            raise RuntimeError("API key expired")
+
+        mock_embedder.embed = _failing_embed
+
+        retriever._db = mock_db
+        retriever._embedder = mock_embedder
+
+        results = await retriever.retrieve("test query", top_k=5)
+        assert len(results) >= 1
+        assert results[0].summary == "fts hit survives embed failure"
+        mock_db.search_vector.assert_not_called()
+
+    async def test_embed_success_still_calls_vector_search(self) -> None:
+        """Normal path: embed succeeds -> both FTS and vector search run."""
+        retriever = _make_retriever()
+
+        mock_db = MagicMock()
+        mock_db.search_vector = MagicMock(
+            return_value=[
+                {
+                    "id": "v1",
+                    "type": "fact",
+                    "summary": "vector hit",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "entities": [],
+                    "status": "active",
+                },
+            ]
+        )
+        mock_db.search_fts = MagicMock(
+            return_value=[
+                {
+                    "id": "f1",
+                    "type": "fact",
+                    "summary": "fts hit",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                    "entities": [],
+                    "status": "active",
+                },
+            ]
+        )
+
+        mock_embedder = MagicMock()
+        mock_embedder.vector_quality = 0.7
+
+        async def _good_embed(text: str) -> list[float]:
+            return [0.1, 0.2, 0.3]
+
+        mock_embedder.embed = _good_embed
+
+        retriever._db = mock_db
+        retriever._embedder = mock_embedder
+
+        results = await retriever.retrieve("test query", top_k=5)
+        mock_db.search_vector.assert_called_once()
+        mock_db.search_fts.assert_called_once()
+        assert len(results) >= 1

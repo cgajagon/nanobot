@@ -148,18 +148,31 @@ class MemoryRetriever:
         if self._embedder is None:
             raise RuntimeError("Embedder not initialized — embedder is None")
 
+        embedder = self._embedder
+        db = self._db
+
         plan = self._planner.plan(query)
         policy = plan.policy
         candidate_k = max(1, min(top_k * int(policy.get("candidate_multiplier", 3)), 60))
 
-        # 1. Embed query
-        query_vec = await self._embedder.embed(query)
+        # 1. Embed + FTS concurrently (FTS does not need the vector)
+        async def _safe_embed() -> list[float] | None:
+            try:
+                return await embedder.embed(query)
+            except Exception:  # crash-barrier: degrade to FTS-only on embed failure
+                bind_trace().warning("Embedding failed, falling back to FTS-only retrieval")
+                return None
 
-        # 2. Dual source — DB methods are synchronous; run concurrently via to_thread
-        vec_results, fts_results = await asyncio.gather(
-            asyncio.to_thread(self._db.search_vector, query_vec, candidate_k),
-            asyncio.to_thread(self._db.search_fts, query, candidate_k),
+        query_vec, fts_results = await asyncio.gather(
+            _safe_embed(),
+            asyncio.to_thread(db.search_fts, query, candidate_k),
         )
+
+        # 2. Vector search only if embedding succeeded
+        if query_vec is not None:
+            vec_results = await asyncio.to_thread(db.search_vector, query_vec, candidate_k)
+        else:
+            vec_results = []
 
         # 3. Fuse via RRF
         candidates = self._fuse_results(
@@ -167,7 +180,7 @@ class MemoryRetriever:
         )
 
         if not candidates:
-            candidates = await asyncio.to_thread(self._db.read_events, limit=candidate_k)
+            candidates = await asyncio.to_thread(db.read_events, limit=candidate_k)
             if not candidates:
                 bind_trace().debug(
                     "Memory retrieve source=unified results=0 duration_ms={:.0f}",
