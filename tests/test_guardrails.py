@@ -14,6 +14,8 @@ def _attempt(
     empty: bool = False,
     snippet: str = "data",
     iteration: int = 1,
+    error_type: str = "unknown",
+    error_snippet: str = "",
 ) -> ToolAttempt:
     return ToolAttempt(
         tool_name=tool,
@@ -22,6 +24,8 @@ def _attempt(
         output_empty=empty,
         output_snippet=snippet,
         iteration=iteration,
+        error_type=error_type,
+        error_snippet=error_snippet,
     )
 
 
@@ -350,3 +354,31 @@ class TestNoProgressBudget:
         attempts = [_attempt(success=True, empty=True)] * 4
         attempts.append(_attempt(success=True, empty=False))
         assert g.check(attempts, [attempts[-1]], iteration=4) is None
+
+
+# ---------------------------------------------------------------------------
+# ToolAttempt error fields
+# ---------------------------------------------------------------------------
+
+
+class TestToolAttemptErrorFields:
+    def test_error_fields_default(self) -> None:
+        """New error fields have safe defaults for backward compatibility."""
+        a = _attempt()
+        assert a.error_type == "unknown"
+        assert a.error_snippet == ""
+
+    def test_error_fields_populated(self) -> None:
+        """Error fields can be set on failed attempts."""
+        a = ToolAttempt(
+            tool_name="exec",
+            arguments={"cmd": "ls"},
+            success=False,
+            output_empty=False,
+            output_snippet="Error: not found",
+            iteration=1,
+            error_type="not_found",
+            error_snippet="Error: not found",
+        )
+        assert a.error_type == "not_found"
+        assert a.error_snippet == "Error: not found"
