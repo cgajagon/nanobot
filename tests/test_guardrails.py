@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from nanobot.agent.failure import ToolCallTracker
 from nanobot.agent.turn_types import ToolAttempt
 
 
@@ -410,3 +411,135 @@ class TestGuardrailChainKwargs:
         result = chain.check([], [], tracker="fake_tracker")
         assert result is not None
         assert "got tracker=str" in result.message
+
+
+# ---------------------------------------------------------------------------
+# FailureEscalation
+# ---------------------------------------------------------------------------
+
+
+class TestFailureEscalation:
+    """Tests for the FailureEscalation guardrail."""
+
+    def _check(
+        self,
+        all_attempts: list[ToolAttempt],
+        latest: list[ToolAttempt],
+        tracker: ToolCallTracker | None = None,
+        disabled_tools: set[str] | None = None,
+    ):
+        from nanobot.agent.turn_guardrails import FailureEscalation
+
+        g = FailureEscalation()
+        return g.check(
+            all_attempts,
+            latest,
+            tracker=tracker or ToolCallTracker(),
+            disabled_tools=disabled_tools if disabled_tools is not None else set(),
+        )
+
+    def test_no_fire_on_success(self) -> None:
+        """Successful tool calls produce no intervention."""
+        latest = [_attempt(success=True)]
+        assert self._check(latest, latest) is None
+
+    def test_no_fire_on_first_failure(self) -> None:
+        """First failure just records — no intervention yet."""
+        latest = [_attempt(success=False, error_type="unknown", error_snippet="some error")]
+        assert self._check(latest, latest) is None
+
+    def test_warn_on_second_identical_failure(self) -> None:
+        """WARN_THRESHOLD (2) identical failures produce a warning."""
+        tracker = ToolCallTracker()
+        args = {"cmd": "ls /nonexistent"}
+        tracker.record_failure("exec", args)
+        latest = [_attempt(tool="exec", args=args, success=False)]
+        result = self._check(latest, latest, tracker=tracker)
+        assert result is not None
+        assert result.severity == "directive"
+        assert "exec" in result.message
+        assert "failed" in result.message.lower()
+
+    def test_disable_on_third_identical_failure(self) -> None:
+        """REMOVE_THRESHOLD (3) identical failures disable the tool."""
+        tracker = ToolCallTracker()
+        disabled: set[str] = set()
+        args = {"cmd": "ls /nonexistent"}
+        tracker.record_failure("exec", args)
+        tracker.record_failure("exec", args)
+        latest = [_attempt(tool="exec", args=args, success=False)]
+        result = self._check(latest, latest, tracker=tracker, disabled_tools=disabled)
+        assert result is not None
+        assert "TOOL REMOVED" in result.message
+        assert "exec" in disabled
+
+    def test_permanent_failure_disables_immediately(self) -> None:
+        """Permanent failures (missing API key) disable on first occurrence."""
+        tracker = ToolCallTracker()
+        disabled: set[str] = set()
+        latest = [
+            _attempt(
+                tool="web_search",
+                args={"query": "test"},
+                success=False,
+                error_type="not_found",
+                error_snippet="web_search is not configured",
+            )
+        ]
+        result = self._check(latest, latest, tracker=tracker, disabled_tools=disabled)
+        assert result is not None
+        assert "TOOL REMOVED" in result.message
+        assert "permanently unavailable" in result.message
+        assert "web_search" in disabled
+
+    def test_repeated_success_disables_tool(self) -> None:
+        """REPEAT_SUCCESS_THRESHOLD (3) identical successes disable the tool."""
+        tracker = ToolCallTracker()
+        disabled: set[str] = set()
+        args = {"content": "hello"}
+        tracker.record_success("message", args)
+        tracker.record_success("message", args)
+        latest = [_attempt(tool="message", args=args, success=True)]
+        result = self._check(latest, latest, tracker=tracker, disabled_tools=disabled)
+        assert result is not None
+        assert "TOOL REMOVED" in result.message
+        assert "message" in disabled
+
+    def test_no_fire_without_tracker(self) -> None:
+        """Without tracker kwargs, guardrail returns None safely."""
+        from nanobot.agent.turn_guardrails import FailureEscalation
+
+        g = FailureEscalation()
+        latest = [_attempt(success=False)]
+        assert g.check(latest, latest) is None
+
+    def test_multiple_failures_joined(self) -> None:
+        """Multiple tool failures in one batch produce a single joined intervention."""
+        tracker = ToolCallTracker()
+        disabled: set[str] = set()
+        args_a = {"cmd": "foo"}
+        args_b = {"path": "/bad"}
+        tracker.record_failure("exec", args_a)
+        tracker.record_failure("read_file", args_b)
+        latest = [
+            _attempt(tool="exec", args=args_a, success=False),
+            _attempt(tool="read_file", args=args_b, success=False),
+        ]
+        result = self._check(latest, latest, tracker=tracker, disabled_tools=disabled)
+        assert result is not None
+        assert "exec" in result.message
+        assert "read_file" in result.message
+
+    def test_mixed_type_args(self) -> None:
+        """Real tool arguments with mixed types (str, int, None) work correctly."""
+        tracker = ToolCallTracker()
+        real_args = {
+            "command": 'obsidian search query="DS10540"',
+            "working_dir": None,
+            "timeout": 60,
+        }
+        tracker.record_failure("exec", real_args)
+        latest = [_attempt(tool="exec", args=real_args, success=False)]
+        result = self._check(latest, latest, tracker=tracker)
+        assert result is not None
+        assert "exec" in result.message
