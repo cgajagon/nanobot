@@ -62,10 +62,10 @@ class TestCollectGraphEntityNames:
     def test_returns_last_seen_timestamps(self) -> None:
         """collect_graph_entity_names returns dict with last_seen from entity rows."""
         aug = _make_augmenter()
-        aug._graph.get_entity_row = MagicMock(
-            side_effect=lambda name: (
-                {"last_seen": "2026-04-01T00:00:00Z"} if name == "bob" else {"last_seen": ""}
-            )
+        aug._graph.get_entities_batch = MagicMock(
+            return_value={
+                "bob": {"last_seen": "2026-04-01T00:00:00Z"},
+            }
         )
         with patch(_EXTRACT_ENTITIES_PATH, return_value=["Alice"]):
             events = [

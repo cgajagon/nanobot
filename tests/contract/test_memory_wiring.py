@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from nanobot.config.memory import MemoryConfig
+from nanobot.memory.db.connection import MemoryDatabase
 from nanobot.memory.store import MemoryStore
 
 
@@ -144,3 +145,15 @@ def test_onnx_unavailable_falls_back_to_composite(tmp_path: Path) -> None:
         assert isinstance(store._reranker, CompositeReranker)
     finally:
         onnx_mod._ort = original
+
+
+class TestBusyTimeout:
+    """SQLite connection has busy_timeout set for concurrent access safety."""
+
+    def test_busy_timeout_set(self, tmp_path: Path) -> None:
+        """Connection should have busy_timeout >= 5000 for WAL concurrent writes."""
+        db = MemoryDatabase(tmp_path / "test.db", dims=384)
+        result = db.connection.execute("PRAGMA busy_timeout").fetchone()
+        assert result is not None
+        timeout = result[0]
+        assert timeout >= 5000, f"Expected busy_timeout >= 5000, got {timeout}"
