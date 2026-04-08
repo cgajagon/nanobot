@@ -11,6 +11,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.turn_types import ToolAttempt
 from nanobot.tools.base import ToolResult
 
@@ -267,6 +269,7 @@ class FailureEscalation:
         tracker = kwargs.get("tracker")
         disabled_tools = kwargs.get("disabled_tools")
         if tracker is None or disabled_tools is None:
+            logger.debug("FailureEscalation skipped: tracker/disabled_tools not provided")
             return None
 
         # all_attempts not needed — tracker accumulates cross-iteration state externally.
