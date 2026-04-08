@@ -101,6 +101,9 @@ stores that added operational complexity without proportional benefit.
 **Enforcement:** `MemoryDatabase` is constructed once in `MemoryStore.__init__` and
 shared via property access (`db.connection`, `db.event_store`, `db.graph_store`).
 
+`PRAGMA busy_timeout = 5000` — allows SQLite to retry for up to 5 seconds
+on lock contention instead of immediately raising `SQLITE_BUSY`.
+
 ### Pattern 2: Fixed-Column Schema with Overflow
 
 The `events` table has only 8 columns. All additional MemoryEvent fields (20+ fields)
@@ -524,6 +527,10 @@ Budget allocation is two-pass: proportional first, then surplus redistributed.
 Minimum 40 tokens per active section. Safety cap: total output <= `budget * 4`
 characters.
 
+`GraphAugmenter` caches events on first `read_events()` call per request
+(cleared in `reset_cache()`). Both `collect_graph_entity_names` and
+`build_graph_context_lines` reuse the cached superset (limit=200).
+
 ---
 
 <a id="knowledge-graph"></a>
@@ -561,6 +568,12 @@ Open-world semantics: predicates without rules are always valid. When domain/ran
 constraints are violated, confidence is demoted by 0.5x but the triple is still
 inserted. Violations do not block — this prevents false negatives from incomplete
 ontology coverage.
+
+### Batch Entity Lookups
+
+`get_entities_batch(names)` fetches multiple entities in one `WHERE name IN (...)`
+query. Names are normalized via `_norm()` before lookup and results are mapped
+back to the caller's original (un-normalized) names.
 
 ### Dual-Mode Operation
 
@@ -871,7 +884,7 @@ All other items resolved:
 | Schema coupling via reference | **Fixed** — `copy.deepcopy()` isolates tool schemas |
 | `profile_mgr` backward-compat | **Fixed** — renamed to `profile_store` throughout |
 | `_norm` duplication | **Fixed** — single definition in `graph/__init__.py`, imported by both |
-| `_db` in Protocol | **Fixed** — `KnowledgeGraph` exposes `get_entity_row()`, `get_edges_from()`, `get_edges_to()` public methods; protocol uses those instead of `_db` |
+| `_db` in Protocol | **Fixed** — `KnowledgeGraph` exposes `get_entity_row()`, `get_entities_batch()`, `get_edges_from()`, `get_edges_to()` public methods; protocol uses those instead of `_db` |
 | `_sync_embed` in dedup | **Removed** — dedup no longer owns an embedder; uses pre-computed vectors from callers and `events_vec` storage |
 | sync `append_events` in async callers | **Fixed** — micro-extractor and consolidation pipeline now use `asyncio.to_thread()` |
 

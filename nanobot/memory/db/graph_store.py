@@ -56,6 +56,22 @@ class GraphStore:
             return None
         return dict(row)
 
+    def get_entities_batch(self, names: set[str]) -> dict[str, dict[str, Any]]:
+        """Fetch multiple entities by name in one query.
+
+        Returns a dict mapping entity name to row dict. Missing entities
+        are omitted from the result (callers should handle absent keys).
+        """
+        if not names:
+            return {}
+        name_list = list(names)
+        placeholders = ",".join("?" for _ in name_list)
+        rows = self._conn.execute(
+            f"SELECT * FROM entities WHERE name IN ({placeholders})",  # noqa: S608
+            name_list,
+        ).fetchall()
+        return {str(row["name"]): dict(row) for row in rows}
+
     def search_entities(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
         """Search entities by name or alias substring match."""
         pattern = f"%{query}%"

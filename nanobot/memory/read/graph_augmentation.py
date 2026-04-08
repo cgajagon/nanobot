@@ -32,14 +32,18 @@ class GraphAugmenter:
         self._extractor = extractor
         self._read_events_fn = read_events_fn
         self._graph_cache: dict[frozenset[str], dict[str, str]] = {}
+        self._events_cache: list[dict[str, Any]] | None = None
 
     def read_events(self, **kwargs: Any) -> list[dict[str, Any]]:
-        """Public accessor for the read-events callable."""
-        return self._read_events_fn(**kwargs)
+        """Public accessor — returns cached events (limit=200 superset)."""
+        if self._events_cache is None:
+            self._events_cache = self._read_events_fn(limit=200)
+        return self._events_cache
 
     def reset_cache(self) -> None:
-        """Clear the per-request graph entity cache."""
+        """Clear all per-request caches (graph entities + events)."""
         self._graph_cache = {}
+        self._events_cache = None
 
     # ------------------------------------------------------------------
     # Entity collection
@@ -84,10 +88,11 @@ class GraphAugmenter:
         )
         all_names = graph_entity_names | graph_related
 
-        # Look up last_seen for each entity from the graph
+        # Look up last_seen for all entities in one batch query
         result: dict[str, str] = {}
+        entity_rows = self._graph.get_entities_batch(all_names)
         for name in all_names:
-            row = self._graph.get_entity_row(name)
+            row = entity_rows.get(name)
             result[name] = str(row.get("last_seen", "")) if row else ""
 
         self._graph_cache[cache_key] = result
@@ -147,7 +152,7 @@ class GraphAugmenter:
         query_entities: set[str] = {e.lower() for e in extract_entities(query)}
 
         # Also extract entities via index lookup (handles lowercase queries).
-        events = self._read_events_fn(limit=200)
+        events = self.read_events()
         entity_index = self.build_entity_index(events)
         query_entities |= self.extract_query_entities(query, entity_index)
 
