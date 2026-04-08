@@ -24,7 +24,6 @@ from nanobot.agent.callbacks import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from nanobot.agent.failure import ToolCallTracker
 from nanobot.agent.streaming import StreamingLLMCaller, strip_think
 from nanobot.agent.turn_guardrails import GuardrailChain
 from nanobot.agent.turn_types import ToolAttempt, TurnResult, TurnState
@@ -384,9 +383,8 @@ class TurnRunner:
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         latest_attempts: list[ToolAttempt] = []
-        to_remove: list[str] = []
-        # System messages (skill injection, guardrails, tool warnings) are collected
-        # here and appended AFTER all tool results to keep tool-role messages contiguous.
+        # Skill injection messages are collected here and appended AFTER all tool
+        # results to keep tool-role messages contiguous.
         deferred_messages: list[dict[str, str]] = []
 
         for tc, result in zip(response.tool_calls, results):
@@ -421,6 +419,13 @@ class TurnRunner:
 
             # Build ToolAttempt for working memory
             output_str = result.to_llm_string()
+            error_type = "unknown"
+            error_snippet = ""
+            if not result.success:
+                error_type = (
+                    result.metadata.get("error_type", "unknown") if result.metadata else "unknown"
+                )
+                error_snippet = (result.error or result.output or "")[:200]
             attempt = ToolAttempt(
                 tool_name=tc.name,
                 arguments=tc.arguments,
@@ -428,70 +433,15 @@ class TurnRunner:
                 output_empty=result.success and _is_output_empty(output_str),
                 output_snippet=output_str[:200],
                 iteration=state.iteration,
+                error_type=error_type,
+                error_snippet=error_snippet,
             )
             latest_attempts.append(attempt)
             state.tool_results_log.append(attempt)
 
-            # Failure / success tracking
-            if not result.success:
-                count, fc = state.tracker.record_failure(tc.name, tc.arguments, result)
-                if count >= ToolCallTracker.REMOVE_THRESHOLD or fc.is_permanent:
-                    to_remove.append(tc.name)
-                    reason = (
-                        f"permanently unavailable ({fc.value})"
-                        if fc.is_permanent
-                        else f"failed {count} times with identical arguments"
-                    )
-                    deferred_messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                f"TOOL REMOVED: `{tc.name}` is {reason} and has been disabled. Use a different approach."
-                            ),
-                        }
-                    )
-                elif count >= ToolCallTracker.WARN_THRESHOLD:
-                    deferred_messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                f"STOP: `{tc.name}` has failed {count} times with the same arguments and error. "
-                                "Do NOT call it again with the same arguments. Use a different approach or provide your best answer."
-                            ),
-                        }
-                    )
-            else:
-                sc = state.tracker.record_success(tc.name, tc.arguments)
-                if sc >= ToolCallTracker.REPEAT_SUCCESS_THRESHOLD:
-                    to_remove.append(tc.name)
-                    deferred_messages.append(
-                        {
-                            "role": "system",
-                            "content": (
-                                f"TOOL REMOVED: `{tc.name}` has been called {sc} times with identical arguments "
-                                "and is not making progress. It has been disabled. Use a different approach or provide your best answer."
-                            ),
-                        }
-                    )
-
         # Append deferred system messages AFTER all tool results to maintain
         # contiguous tool-result message ordering required by OpenAI API.
         state.messages.extend(deferred_messages)
-
-        state.disabled_tools.update(to_remove)
-
-        # Global failure budget: force final answer
-        if state.tracker.budget_exhausted:
-            state.messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        f"You have {state.tracker.total_failures} failed tool calls this turn. "
-                        "Stop calling tools and produce your final answer NOW with whatever information you have."
-                    ),
-                }
-            )
-            state.nudged_for_final = True
 
         update_current_span(
             metadata={
@@ -503,7 +453,11 @@ class TurnRunner:
 
         # Guardrail checkpoint
         intervention = self._guardrails.check(
-            state.tool_results_log, latest_attempts, iteration=state.iteration
+            state.tool_results_log,
+            latest_attempts,
+            iteration=state.iteration,
+            tracker=state.tracker,
+            disabled_tools=state.disabled_tools,
         )
         if intervention is not None:
             logger.info(
@@ -529,6 +483,22 @@ class TurnRunner:
                     "failed_args": _failed.arguments if _failed else {},
                 }
             )
+
+        # Global failure budget: force final answer
+        # Checked AFTER guardrail checkpoint because FailureEscalation calls
+        # tracker.record_failure() during its check, updating total_failures.
+        if state.tracker.budget_exhausted:
+            state.messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"You have {state.tracker.total_failures} failed tool calls this turn. "
+                        "Stop calling tools and produce your final answer NOW "
+                        "with whatever information you have."
+                    ),
+                }
+            )
+            state.nudged_for_final = True
 
     # ------------------------------------------------------------------
     # Self-check

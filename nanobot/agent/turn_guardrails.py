@@ -11,7 +11,20 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from nanobot.agent.turn_types import ToolAttempt
+from nanobot.tools.base import ToolResult
+
+
+def _make_classify_result(attempt: ToolAttempt) -> ToolResult:
+    """Build a minimal ToolResult for failure classification from ToolAttempt fields."""
+    return ToolResult(
+        output=attempt.error_snippet,
+        success=False,
+        error=attempt.error_snippet,
+        metadata={"error_type": attempt.error_type},
+    )
 
 
 def _canonical_args(arguments: dict[str, Any]) -> str:
@@ -56,10 +69,11 @@ class GuardrailChain:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         for guardrail in self._guardrails:
             result: Intervention | None = guardrail.check(
-                all_attempts, latest_results, iteration=iteration
+                all_attempts, latest_results, iteration=iteration, **kwargs
             )
             if result is not None:
                 return result
@@ -84,6 +98,7 @@ class EmptyResultRecovery:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         empty_latest = [a for a in latest_results if a.success and a.output_empty]
         if not empty_latest:
@@ -134,6 +149,7 @@ class RepeatedStrategyDetection:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         counts: dict[tuple[str, str], int] = {}
         for a in all_attempts:
@@ -167,6 +183,7 @@ class SkillTunnelVision:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         if iteration < 3:
             return None
@@ -205,6 +222,7 @@ class NoProgressBudget:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         if iteration < 4:
             return None
@@ -225,9 +243,15 @@ class NoProgressBudget:
 
 
 class FailureEscalation:
-    """Escalates repeated failures into stronger interventions.
+    """Disables tools after repeated failures or identical successes.
 
-    # Full implementation in Phase 3 when ToolCallTracker is wired
+    This guardrail is the one exception to the pure-function rule — it calls
+    ``tracker.record_failure()`` and ``tracker.record_success()`` which mutate
+    the tracker. This is acceptable because failure tracking is a bookkeeping
+    concern, not a reasoning concern.
+
+    Requires ``tracker`` (ToolCallTracker) and ``disabled_tools`` (set[str])
+    passed as kwargs from the turn runner via GuardrailChain.
     """
 
     @property
@@ -240,5 +264,54 @@ class FailureEscalation:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
+        tracker = kwargs.get("tracker")
+        disabled_tools = kwargs.get("disabled_tools")
+        if tracker is None or disabled_tools is None:
+            logger.debug("FailureEscalation skipped: tracker/disabled_tools not provided")
+            return None
+
+        # all_attempts not needed — tracker accumulates cross-iteration state externally.
+        messages: list[str] = []
+        for attempt in latest_results:
+            if not attempt.success:
+                result = _make_classify_result(attempt)
+                count, fc = tracker.record_failure(attempt.tool_name, attempt.arguments, result)
+                if count >= tracker.REMOVE_THRESHOLD or fc.is_permanent:
+                    disabled_tools.add(attempt.tool_name)
+                    reason = (
+                        f"permanently unavailable ({fc.value})"
+                        if fc.is_permanent
+                        else f"failed {count} times with identical arguments"
+                    )
+                    messages.append(
+                        f"TOOL REMOVED: `{attempt.tool_name}` is {reason} "
+                        "and has been disabled. Use a different approach."
+                    )
+                elif count >= tracker.WARN_THRESHOLD:
+                    messages.append(
+                        f"STOP: `{attempt.tool_name}` has failed {count} times "
+                        "with the same arguments and error. Do NOT call it again "
+                        "with the same arguments. Use a different approach or "
+                        "provide your best answer."
+                    )
+            else:
+                sc = tracker.record_success(attempt.tool_name, attempt.arguments)
+                if sc >= tracker.REPEAT_SUCCESS_THRESHOLD:
+                    disabled_tools.add(attempt.tool_name)
+                    messages.append(
+                        f"TOOL REMOVED: `{attempt.tool_name}` has been called "
+                        f"{sc} times with identical arguments and is not making "
+                        "progress. It has been disabled. Use a different approach "
+                        "or provide your best answer."
+                    )
+
+        if messages:
+            return Intervention(
+                source=self.name,
+                message="\n".join(messages),
+                severity="directive",
+                strategy_tag=None,
+            )
         return None

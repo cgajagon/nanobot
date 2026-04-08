@@ -91,6 +91,7 @@ class FakeGuardrails:
         latest_results: list[Any],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         return self._intervention
 

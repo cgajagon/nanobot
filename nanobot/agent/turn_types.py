@@ -69,6 +69,8 @@ class ToolAttempt:
     output_empty: bool  # True when success=True but no meaningful data returned
     output_snippet: str  # First 200 chars of output for pattern detection
     iteration: int
+    error_type: str = "unknown"  # FailureClass value for failed calls
+    error_snippet: str = ""  # First 200 chars of error message for classification
 
 
 class Orchestrator(Protocol):
