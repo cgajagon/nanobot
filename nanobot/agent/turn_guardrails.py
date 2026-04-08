@@ -269,6 +269,7 @@ class FailureEscalation:
         if tracker is None or disabled_tools is None:
             return None
 
+        # all_attempts not needed — tracker accumulates cross-iteration state externally.
         messages: list[str] = []
         for attempt in latest_results:
             if not attempt.success:
