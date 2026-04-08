@@ -56,10 +56,11 @@ class GuardrailChain:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         for guardrail in self._guardrails:
             result: Intervention | None = guardrail.check(
-                all_attempts, latest_results, iteration=iteration
+                all_attempts, latest_results, iteration=iteration, **kwargs
             )
             if result is not None:
                 return result
@@ -84,6 +85,7 @@ class EmptyResultRecovery:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         empty_latest = [a for a in latest_results if a.success and a.output_empty]
         if not empty_latest:
@@ -134,6 +136,7 @@ class RepeatedStrategyDetection:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         counts: dict[tuple[str, str], int] = {}
         for a in all_attempts:
@@ -167,6 +170,7 @@ class SkillTunnelVision:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         if iteration < 3:
             return None
@@ -205,6 +209,7 @@ class NoProgressBudget:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         if iteration < 4:
             return None
@@ -240,5 +245,6 @@ class FailureEscalation:
         latest_results: list[ToolAttempt],
         *,
         iteration: int = 0,
+        **kwargs: Any,
     ) -> Intervention | None:
         return None

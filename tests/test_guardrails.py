@@ -382,3 +382,31 @@ class TestToolAttemptErrorFields:
         )
         assert a.error_type == "not_found"
         assert a.error_snippet == "Error: not found"
+
+
+# ---------------------------------------------------------------------------
+# GuardrailChain kwargs forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestGuardrailChainKwargs:
+    def test_extra_kwargs_forwarded(self) -> None:
+        """GuardrailChain forwards extra kwargs to guardrails."""
+        from nanobot.agent.turn_guardrails import GuardrailChain, Intervention
+
+        class KwargCapture:
+            name = "capture"
+
+            def check(self, all_attempts, latest_results, *, iteration=0, **kwargs):
+                if "tracker" in kwargs:
+                    return Intervention(
+                        source=self.name,
+                        message=f"got tracker={type(kwargs['tracker']).__name__}",
+                        severity="hint",
+                    )
+                return None
+
+        chain = GuardrailChain([KwargCapture()])
+        result = chain.check([], [], tracker="fake_tracker")
+        assert result is not None
+        assert "got tracker=str" in result.message
