@@ -338,6 +338,32 @@ async def test_stream_chat_success_and_error(monkeypatch: pytest.MonkeyPatch) ->
     assert "Error calling LLM" in (err_chunks[-1].content_delta or "")
 
 
+@pytest.mark.asyncio
+async def test_stream_chat_invalid_request_sets_finish_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stream_chat classifies BadRequestError as 'invalid_request'."""
+    import litellm as _litellm
+
+    async def mock_acompletion(**kwargs: Any) -> Any:
+        raise _litellm.BadRequestError(
+            message="invalid_request_error: orphaned tool_result",
+            model="test",
+            llm_provider="anthropic",
+        )
+
+    monkeypatch.setattr("nanobot.providers.litellm_provider.acompletion", mock_acompletion)
+    provider = LiteLLMProvider(api_key="sk-test")
+    chunks = [
+        c
+        async for c in provider.stream_chat(
+            messages=[{"role": "user", "content": "hi"}], tools=None
+        )
+    ]
+    assert chunks[-1].done is True
+    assert chunks[-1].finish_reason == "invalid_request"
+
+
 async def test_aclose_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = LiteLLMProvider(api_key=None)
     await provider.aclose()
