@@ -383,8 +383,8 @@ class TurnRunner:
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         latest_attempts: list[ToolAttempt] = []
-        # System messages (skill injection, guardrails, tool warnings) are collected
-        # here and appended AFTER all tool results to keep tool-role messages contiguous.
+        # Skill injection messages are collected here and appended AFTER all tool
+        # results to keep tool-role messages contiguous.
         deferred_messages: list[dict[str, str]] = []
 
         for tc, result in zip(response.tool_calls, results):
