@@ -146,7 +146,7 @@ optional self-check → return TurnResult
 
 | Guardrail | Fires When |
 |-----------|-----------|
-| FailureEscalation | Tool fails N times |
+| FailureEscalation | Tool fails N times or identical success loops |
 | NoProgressBudget | 4+ iterations, no useful data |
 | RepeatedStrategyDetection | Same tool+args 3 times |
 | EmptyResultRecovery | Success but empty output |

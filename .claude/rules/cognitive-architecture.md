@@ -580,35 +580,45 @@ class NoProgressBudget:
 
 #### Guardrail 5: Failure Escalation
 
-Wraps the existing `ToolCallTracker` logic — tool disabling after repeated failures.
+Disables tools after repeated failures or identical successes. Receives `tracker`
+(ToolCallTracker) and `disabled_tools` (set[str]) via `**kwargs` from the turn runner.
 
 ```python
 class FailureEscalation:
-    """Fires when a specific tool has failed enough times to be disabled."""
+    """Disables tools after repeated failures or identical successes."""
 
     name = "failure_escalation"
 
-    def check(self, state, latest_results):
-        failed = [r for r in latest_results if not r.success]
-        if not failed:
+    def check(self, all_attempts, latest_results, *, iteration=0, **kwargs):
+        tracker = kwargs.get("tracker")
+        disabled_tools = kwargs.get("disabled_tools")
+        if tracker is None or disabled_tools is None:
             return None
 
         messages = []
-        for result in failed:
-            count, fc = state.tracker.record_failure(
-                result.tool_name, result.arguments, result
-            )
-            if count >= ToolCallTracker.REMOVE_THRESHOLD or fc.is_permanent:
-                state.disabled_tools.add(result.tool_name)
-                messages.append(
-                    f"`{result.tool_name}` disabled ({fc.value}). "
-                    "Use a different tool."
+        for attempt in latest_results:
+            if not attempt.success:
+                result = _make_classify_result(attempt)
+                count, fc = tracker.record_failure(
+                    attempt.tool_name, attempt.arguments, result
                 )
-            elif count >= ToolCallTracker.WARN_THRESHOLD:
-                messages.append(
-                    f"`{result.tool_name}` has failed {count} times. "
-                    "Try different arguments or a different tool."
-                )
+                if count >= tracker.REMOVE_THRESHOLD or fc.is_permanent:
+                    disabled_tools.add(attempt.tool_name)
+                    messages.append(
+                        f"TOOL REMOVED: `{attempt.tool_name}` is ... "
+                        "Use a different approach."
+                    )
+                elif count >= tracker.WARN_THRESHOLD:
+                    messages.append(
+                        f"STOP: `{attempt.tool_name}` has failed {count} times ..."
+                    )
+            else:
+                sc = tracker.record_success(attempt.tool_name, attempt.arguments)
+                if sc >= tracker.REPEAT_SUCCESS_THRESHOLD:
+                    disabled_tools.add(attempt.tool_name)
+                    messages.append(
+                        f"TOOL REMOVED: `{attempt.tool_name}` called {sc} times ..."
+                    )
 
         if messages:
             return Intervention(
@@ -621,8 +631,13 @@ class FailureEscalation:
 ```
 
 **Note:** This guardrail is the one exception to the "pure function" rule — it calls
-`state.tracker.record_failure()` which mutates the tracker. This is acceptable because
-failure tracking is a bookkeeping concern, not a reasoning concern.
+`tracker.record_failure()` and `tracker.record_success()` which mutate the tracker.
+This is acceptable because failure tracking is a bookkeeping concern, not a reasoning
+concern. It also mutates `disabled_tools` directly.
+
+`ToolAttempt` carries `error_type` and `error_snippet` fields so the guardrail can
+reconstruct a minimal `ToolResult` for `classify_failure()` without importing
+concrete tool types beyond `ToolResult` (a data object).
 
 ### Registration and Ordering
 
