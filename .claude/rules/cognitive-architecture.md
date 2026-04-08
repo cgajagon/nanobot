@@ -246,6 +246,19 @@ shared between `StreamingLLMCaller` (main turns) and `ConsolidationOrchestrator`
 (background memory consolidation). Both call `wait_if_needed()` before and `record()`
 after LLM calls, preventing concurrent API competition.
 
+**Non-retryable errors:** The provider classifies certain exceptions into
+distinct `finish_reason` values that bypass retry entirely:
+
+- `"invalid_request"` — 400 errors (malformed messages, orphaned tool results).
+  Immediate break with user-facing message suggesting a new conversation.
+- `"auth_error"` — 401 errors (invalid API key). Immediate break with
+  configuration guidance.
+
+These branches appear before the `"error"` branch in `_handle_llm_error()`
+so they take precedence. Classification uses `isinstance` against litellm's
+exception hierarchy (`litellm.BadRequestError`, `litellm.AuthenticationError`)
+via `_classify_llm_error()` in `litellm_provider.py`.
+
 ### Working Memory (Per-Turn State)
 
 ```python
