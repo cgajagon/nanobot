@@ -428,3 +428,34 @@ class TestSession:
                 for tc in m["tool_calls"]:
                     asst_ids.add(tc["id"])
         assert tool_ids <= asst_ids, f"Orphaned tool results: {tool_ids - asst_ids}"
+
+    def test_get_history_id_remapping_preserves_pairing(self):
+        """Tool call IDs are remapped consistently in both assistant and tool messages."""
+        session = Session(key="test")
+        long_id = "toolu_01ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"
+        assert len(long_id) > 40, "ID must be long enough to trigger remapping"
+        session.messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": long_id,
+                        "type": "function",
+                        "function": {"name": "exec", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": long_id, "name": "exec", "content": "result"},
+            {"role": "assistant", "content": "done"},
+        ]
+        history = session.get_history()
+        asst_msg = next(m for m in history if m.get("tool_calls"))
+        tool_msg = next(m for m in history if m.get("role") == "tool")
+        remapped_call_id = asst_msg["tool_calls"][0]["id"]
+        remapped_result_id = tool_msg["tool_call_id"]
+        assert remapped_call_id != long_id, "Long ID should be remapped"
+        assert remapped_call_id == remapped_result_id, (
+            f"Remapped IDs must match: call={remapped_call_id}, result={remapped_result_id}"
+        )

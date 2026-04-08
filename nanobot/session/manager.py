@@ -33,6 +33,31 @@ def _clamp_tool_id(raw: str, cache: dict[str, str]) -> str:
     return short
 
 
+def _find_clean_boundary(unconsolidated: list[dict[str, Any]], target_start: int) -> int:
+    """Find nearest clean message boundary for history slicing.
+
+    A "clean boundary" is a user message or a standalone assistant (no
+    tool_calls) -- neither is mid-tool-cycle. Scans backward from
+    *target_start* first, then forward if nothing found behind.
+
+    Returns the index to slice from, or ``len(unconsolidated)`` if no
+    clean boundary exists (yields an empty slice).
+    """
+    # Scan backward from target
+    for i in range(target_start, -1, -1):
+        m = unconsolidated[i]
+        role = m.get("role")
+        if role == "user" or (role == "assistant" and not m.get("tool_calls")):
+            return i
+    # No clean boundary behind -- scan forward
+    for i in range(target_start, len(unconsolidated)):
+        m = unconsolidated[i]
+        role = m.get("role")
+        if role == "user" or (role == "assistant" and not m.get("tool_calls")):
+            return i
+    return len(unconsolidated)
+
+
 @dataclass(slots=True)
 class Session:
     """
@@ -64,44 +89,14 @@ class Session:
         self.updated_at = datetime.now(timezone.utc)
 
     def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
-        """Return unconsolidated messages for LLM input, aligned to a user turn."""
+        """Return unconsolidated messages for LLM input, sliced at a clean boundary."""
         unconsolidated = self.messages[self.last_consolidated :]
 
         if not unconsolidated:
             return []
 
-        # Boundary-aware slicing: find a clean message boundary to avoid
-        # orphaning tool results whose matching assistant tool_calls are
-        # outside the window. A "clean boundary" is a user message or a
-        # standalone assistant (no tool_calls) — neither is mid-cycle.
         target_start = max(0, len(unconsolidated) - max_messages)
-        boundary = target_start
-        for i in range(target_start, -1, -1):
-            m = unconsolidated[i]
-            role = m.get("role")
-            if role == "user":
-                boundary = i
-                break
-            if role == "assistant" and not m.get("tool_calls"):
-                boundary = i
-                break
-        else:
-            # No clean boundary behind target — scan forward for any
-            # standalone assistant after target_start
-            found = False
-            for i in range(target_start, len(unconsolidated)):
-                m = unconsolidated[i]
-                if m.get("role") == "user":
-                    boundary = i
-                    found = True
-                    break
-                if m.get("role") == "assistant" and not m.get("tool_calls"):
-                    boundary = i
-                    found = True
-                    break
-            if not found:
-                boundary = len(unconsolidated)  # yields empty slice
-
+        boundary = _find_clean_boundary(unconsolidated, target_start)
         sliced = unconsolidated[boundary:]
 
         out: list[dict[str, Any]] = []
