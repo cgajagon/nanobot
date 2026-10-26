@@ -63,7 +63,10 @@ prometheus = [
 ]
 
 reranker = [
-    "onnxruntime>=1.17.0,<2.0.0",
+    # onnxruntime 1.24+ ships no cp310 wheels; uv locks one version for all
+    # Pythons, so pin 3.10 to the last release that has them.
+    "onnxruntime>=1.17.0,<1.24.0; python_version < '3.11'",
+    "onnxruntime>=1.17.0,<2.0.0; python_version >= '3.11'",
     "tokenizers>=0.15.0,<1.0.0",
 ]
 
