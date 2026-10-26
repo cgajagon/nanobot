@@ -19,7 +19,8 @@ classifiers = [
 
 dependencies = [
     "typer>=0.20.0,<1.0.0",
-    "litellm>=1.81.5,<2.0.0",
+    # <1.103: litellm 1.103+ imports mcp 2.x APIs at runtime; lift together with the mcp<2 pin.
+    "litellm>=1.81.5,<1.103.0",
     "pydantic>=2.12.0,<3.0.0",
     "pydantic-settings>=2.12.0,<3.0.0",
     "websockets>=16.0,<17.0",

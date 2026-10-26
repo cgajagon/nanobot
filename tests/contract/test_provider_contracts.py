@@ -4,14 +4,23 @@ These tests verify that:
 1. ``LLMProvider`` subclasses honour the abstract interface contract.
 2. ``LLMResponse`` and ``StreamChunk`` dataclasses behave consistently.
 3. ``ToolCallRequest`` dataclass has required fields.
+4. ``LiteLLMProvider`` requests with tools work against the installed litellm.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 from typing import Any
 
+import litellm
+import pytest
+
+from nanobot.providers import litellm_provider
 from nanobot.providers.base import LLMProvider, LLMResponse, StreamChunk, ToolCallRequest
+from nanobot.providers.litellm_provider import LiteLLMProvider
+from nanobot.tools.builtin.filesystem import ListDirTool, ReadFileTool
 
 # ---------------------------------------------------------------------------
 # Contract: LLMProvider ABC
@@ -204,3 +213,61 @@ class TestToolCallRequestContract:
     def test_empty_arguments(self):
         tc = ToolCallRequest(id="1", name="list_dir", arguments={})
         assert tc.arguments == {}
+
+
+# ---------------------------------------------------------------------------
+# Contract: LiteLLMProvider + installed litellm accept tool requests
+# ---------------------------------------------------------------------------
+
+
+class TestLiteLLMToolRequestContract:
+    """A chat request carrying tools must succeed against the installed litellm.
+
+    Unit tests elsewhere mock ``acompletion``, so an incompatibility inside
+    litellm's tool path (e.g. litellm 1.103+ importing mcp 2.x APIs while
+    mcp<2 is installed) only surfaced in integration tests. This test runs
+    litellm's real request path offline via ``mock_response``.
+    """
+
+    @pytest.mark.parametrize("model", ["gpt-4o-mini", "anthropic/claude-haiku-4-5"])
+    async def test_chat_with_tools_reaches_litellm(
+        self, model: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sent: dict[str, Any] = {}
+
+        async def offline_acompletion(**kwargs: Any) -> Any:
+            sent.update(kwargs)
+            return await litellm.acompletion(**kwargs, mock_response="done")
+
+        monkeypatch.setattr(litellm_provider, "acompletion", offline_acompletion)
+
+        tools = [
+            ReadFileTool(workspace=tmp_path).to_schema(),
+            ListDirTool(workspace=tmp_path).to_schema(),
+        ]
+        # History in the exact shape TurnRunner produces: an assistant tool call
+        # with JSON-encoded mixed-type arguments, followed by its tool result.
+        args = {"path": "notes/DS10540.md", "limit": 60, "offset": None, "tags": ["a"], "opts": {}}
+        messages = [
+            {"role": "system", "content": "You are nanobot."},
+            {"role": "user", "content": "Read my DS10540 notes"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": json.dumps(args)},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": ""},
+        ]
+
+        provider = LiteLLMProvider(api_key=None, default_model=model)
+        response = await provider.chat(messages=messages, tools=tools, model=model)
+
+        assert response.finish_reason != "error", response.content
+        assert response.content == "done"
+        assert [t["function"]["name"] for t in sent["tools"]] == ["read_file", "list_dir"]
