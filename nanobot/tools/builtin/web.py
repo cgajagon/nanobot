@@ -124,7 +124,7 @@ async def _check_ssrf_host(host: str) -> str | None:
         loop = asyncio.get_event_loop()
         addr_info = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
         for _, _, _, _, sockaddr in addr_info:
-            ip_str = sockaddr[0]
+            ip_str = str(sockaddr[0])
             if _is_private_ip(ip_str):
                 return f"Access to private/internal addresses is not permitted (resolved {host} → {ip_str})"
     except OSError:

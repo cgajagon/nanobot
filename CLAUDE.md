@@ -238,8 +238,9 @@ The memory subsystem (`nanobot/memory/`) uses a **unified SQLite storage** strat
 ## Dev Commands
 
 ```bash
-make install        # Install dev dependencies
-make install-all    # Install with optional extras (reranker, oauth) + npm bridge
+make install        # Install dev dependencies at the versions pinned in uv.lock
+make install-all    # Same, plus optional extras (reranker, oauth) + npm bridge
+make lock           # Re-resolve uv.lock after changing dependencies in pyproject.toml
 make test           # Fast unit tests only (excludes integration)
 make test-verbose   # Unit tests with verbose output
 make test-cov       # Unit tests with coverage report (85% gate)

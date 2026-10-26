@@ -20,11 +20,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Install locked dependencies
+        run: |
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Ruff lint
         run: ruff check nanobot/ tests/
       - name: Ruff format check
@@ -51,7 +53,7 @@ jobs:
         python-version: ['3.10', '3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Cache ONNX models
@@ -61,8 +63,10 @@ jobs:
             ~/.cache/nanobot/models
             ~/.cache/huggingface
           key: onnx-models-v2-${{ matrix.python-version }}
-      - name: Install dependencies
-        run: pip install -e ".[dev,reranker]"
+      - name: Install locked dependencies
+        run: |
+          uv sync --locked --extra dev --extra reranker
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Pre-download ONNX models
         run: |
           python -c "
@@ -81,11 +85,13 @@ jobs:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -e ".[dev,reranker]"
+      - name: Install locked dependencies
+        run: |
+          uv sync --locked --extra dev --extra reranker
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Run integration tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
