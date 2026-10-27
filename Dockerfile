@@ -7,16 +7,19 @@ WORKDIR /build
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
+# uv is only used to export the lockfile; it stays in the builder stage.
+COPY --from=ghcr.io/astral-sh/uv:0.11.6 /uv /usr/local/bin/uv
+
 # Copy build metadata + bridge source (~10KB).
 # bridge/ is required by pyproject.toml [tool.hatch.build.targets.wheel.force-include]
 # which maps "bridge" → "nanobot/bridge" inside the wheel.
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY bridge/ bridge/
 
-# Dependency cache layer: stub package satisfies hatchling discovery,
-# --prefix=/install isolates installed packages for clean COPY later.
-RUN mkdir -p nanobot && touch nanobot/__init__.py && \
-    pip install --no-cache-dir --prefix=/install .
+# Dependency cache layer: install the exact versions pinned in uv.lock, with
+# hash verification. --prefix=/install isolates them for clean COPY later.
+RUN uv export --frozen --no-emit-project -o requirements.lock.txt && \
+    pip install --no-cache-dir --prefix=/install --require-hashes -r requirements.lock.txt
 
 # Application layer: only rebuilds when nanobot/ source changes.
 # --no-deps skips dependency resolution (already installed above).

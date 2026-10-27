@@ -2,18 +2,28 @@
 # Without this, Make uses cmd.exe on Windows, breaking VAR=1, find, rm -rf, ||, etc.
 SHELL := bash
 
-.PHONY: install install-all test test-verbose test-cov test-integration test-e2e test-e2e-headed lint format typecheck check ci pre-push import-check structure-check prompt-check phase-todo-check doc-check memory-eval live-eval clean worktree-clean pre-commit-install
+.PHONY: install install-all lock test test-verbose test-cov test-integration test-e2e test-e2e-headed lint format typecheck check ci pre-push import-check structure-check prompt-check phase-todo-check doc-check memory-eval live-eval clean worktree-clean pre-commit-install
 
 PYTHON ?= python
+# Temporary pip requirements exported from uv.lock (a real file, not <(...):
+# Windows-native Python cannot open the /proc paths that process substitution yields).
+LOCK_REQS := .requirements.lock.txt
 
-install:
-	$(PYTHON) -m pip install -e ".[dev]"
+install:  ## Install the exact dependency versions pinned in uv.lock
+	uv export --frozen --extra dev --no-emit-project -o $(LOCK_REQS)
+	$(PYTHON) -m pip install --require-hashes -r $(LOCK_REQS); status=$$?; rm -f $(LOCK_REQS); exit $$status
+	$(PYTHON) -m pip install --no-deps -e .
 	pre-commit install
 
 install-all:
-	$(PYTHON) -m pip install -e ".[dev,oauth]"
+	uv export --frozen --extra dev --extra oauth --extra reranker --no-emit-project -o $(LOCK_REQS)
+	$(PYTHON) -m pip install --require-hashes -r $(LOCK_REQS); status=$$?; rm -f $(LOCK_REQS); exit $$status
+	$(PYTHON) -m pip install --no-deps -e .
 	cd bridge && npm install
 	pre-commit install
+
+lock:  ## Re-resolve uv.lock after editing dependencies in pyproject.toml
+	uv lock
 
 test:  ## Fast unit tests only (every edit)
 	$(PYTHON) -m pytest tests/ --ignore=tests/integration -x -q

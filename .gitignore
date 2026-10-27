@@ -46,3 +46,6 @@ coverage.json
 .mcp.json
 .playwright-mcp/
 .pre-commit/
+
+# Temporary export from uv.lock used by make install
+.requirements.lock.txt

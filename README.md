@@ -40,7 +40,7 @@ pip install nanobot-ai
 ```bash
 git clone https://github.com/HKUDS/nanobot.git
 cd nanobot
-make install
+make install   # requires uv: installs the exact versions pinned in uv.lock
 ```
 
 ### Optional extras

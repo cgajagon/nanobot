@@ -5,7 +5,7 @@
 ```bash
 git clone https://github.com/your-org/nanobot.git
 cd nanobot
-make install       # Install dev dependencies
+make install       # Install dev dependencies (exact versions from uv.lock; needs uv)
 make check         # Verify everything works: lint + typecheck + test
 ```
 

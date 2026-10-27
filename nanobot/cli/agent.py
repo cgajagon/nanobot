@@ -50,13 +50,14 @@ def _flush_pending_tty_input() -> None:
     except Exception:  # crash-barrier: stdin may not be a tty
         return
 
-    try:
-        import termios
+    if sys.platform != "win32":  # termios is POSIX-only
+        try:
+            import termios
 
-        termios.tcflush(fd, termios.TCIFLUSH)  # type: ignore[attr-defined]
-        return
-    except (OSError, ImportError, AttributeError):
-        pass
+            termios.tcflush(fd, termios.TCIFLUSH)
+            return
+        except (OSError, AttributeError):
+            pass
 
     try:
         while True:
@@ -71,13 +72,13 @@ def _flush_pending_tty_input() -> None:
 
 def _restore_terminal() -> None:
     """Restore terminal to its original state (echo, line buffering, etc.)."""
-    if _SAVED_TERM_ATTRS is None:
+    if _SAVED_TERM_ATTRS is None or sys.platform == "win32":  # termios is POSIX-only
         return
     try:
         import termios
 
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _SAVED_TERM_ATTRS)
-    except (OSError, ImportError, AttributeError):
+    except (OSError, AttributeError):
         pass  # terminal restore is best-effort; ignore if unavailable
 
 
@@ -85,13 +86,14 @@ def _init_prompt_session() -> None:
     """Create the prompt_toolkit session with persistent file history."""
     global _PROMPT_SESSION, _SAVED_TERM_ATTRS
 
-    # Save terminal state so we can restore it on exit
-    try:
-        import termios
+    # Save terminal state so we can restore it on exit (termios is POSIX-only)
+    if sys.platform != "win32":
+        try:
+            import termios
 
-        _SAVED_TERM_ATTRS = termios.tcgetattr(sys.stdin.fileno())  # type: ignore[attr-defined]
-    except (OSError, ImportError, AttributeError):
-        pass  # terminal state save is best-effort; ignore if unavailable
+            _SAVED_TERM_ATTRS = termios.tcgetattr(sys.stdin.fileno())
+        except (OSError, AttributeError):
+            pass  # terminal state save is best-effort; ignore if unavailable
 
     history_file = Path.home() / ".nanobot" / "history" / "cli_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)

@@ -25,23 +25,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.11'
 
-      - name: Install pip-audit
-        # Pin version to prevent dependency drift between CI and security scan (LAN-169)
-        run: pip install pip-audit==2.7.3
+      - name: Export locked dependency set
+        # Audit the exact versions pinned in uv.lock (every extra), not a fresh
+        # resolution of pyproject.toml ranges.
+        run: uv export --frozen --all-extras --no-emit-project --no-hashes -o requirements-audit.txt
 
       - name: Run pip-audit
-        # Audit declared dependencies via pyproject.toml (project path mode).
-        # This avoids the --strict vs --skip-editable incompatibility where
-        # pip-audit treats skipped editable packages as fatal errors.
         #
         # GHSA-5239-wwwm-4pmq: pygments ≤2.19.2 ReDoS in AdlLexer — no fix
         # available yet (transitive dep via rich/pytest). Remove ignore when
         # pygments releases a patched version.
-        run: pip-audit --strict --desc --ignore-vuln GHSA-5239-wwwm-4pmq .
+        # pip-audit version pinned to prevent drift between CI and security scan (LAN-169)
+        run: uvx pip-audit==2.7.3 --strict --desc --no-deps --ignore-vuln GHSA-5239-wwwm-4pmq -r requirements-audit.txt
 
   trivy-image:
     name: Container image scan

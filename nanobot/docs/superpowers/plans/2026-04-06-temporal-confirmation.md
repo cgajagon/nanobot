@@ -133,7 +133,9 @@ def test_source_role_in_micro_extract_schema():
     """_MICRO_EXTRACT_TOOL schema includes source_role field."""
     from nanobot.memory.write.micro_extractor import _MICRO_EXTRACT_TOOL
 
-    props = _MICRO_EXTRACT_TOOL[0]["function"]["parameters"]["properties"]["events"]["items"]["properties"]
+    props = _MICRO_EXTRACT_TOOL[0]["function"]["parameters"]["properties"]["events"]["items"][
+        "properties"
+    ]
     assert "source_role" in props
     assert props["source_role"]["type"] == "string"
     assert "user" in props["source_role"]["enum"]
@@ -521,9 +523,10 @@ Add the necessary imports at the top of `retriever.py` if not already present (`
 In `nanobot/memory/read/retriever.py`, in `_retrieve_unified()`, add the TTL filter after step 5 (filter) and before step 6 (score). Find the comment `# 5. Filter` and add after it:
 
 ```python
-        # 5b. TTL expiry filter
-        from datetime import timezone
-        filtered = filter_expired(filtered, datetime.now(timezone.utc))
+# 5b. TTL expiry filter
+from datetime import timezone
+
+filtered = filter_expired(filtered, datetime.now(timezone.utc))
 ```
 
 (Or import `timezone` at the top of the file alongside existing datetime imports.)
@@ -589,12 +592,22 @@ class TestStabilityAwareDecay:
             }
         ]
         scored_high = scorer.score_items(
-            items_high, plan, profile_data, set(),
-            use_recency=True, router_enabled=True, type_separation_enabled=False,
+            items_high,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
         )
         scored_low = scorer.score_items(
-            items_low, plan, profile_data, set(),
-            use_recency=True, router_enabled=True, type_separation_enabled=False,
+            items_low,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
         )
         # High stability should have higher final score due to slower decay
         assert scored_high[0]["score"] > scored_low[0]["score"]
@@ -609,6 +622,7 @@ class TestStabilityAwareDecay:
             "resolved_keep_new_new": {k: set() for k in PROFILE_KEYS},
         }
         from datetime import datetime, timedelta, timezone
+
         recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         old = "2024-01-01T00:00:00Z"
 
@@ -638,12 +652,22 @@ class TestStabilityAwareDecay:
             }
         ]
         scored_confirmed = scorer.score_items(
-            items_confirmed, plan, profile_data, set(),
-            use_recency=True, router_enabled=True, type_separation_enabled=False,
+            items_confirmed,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
         )
         scored_stale = scorer.score_items(
-            items_stale, plan, profile_data, set(),
-            use_recency=True, router_enabled=True, type_separation_enabled=False,
+            items_stale,
+            plan,
+            profile_data,
+            set(),
+            use_recency=True,
+            router_enabled=True,
+            type_separation_enabled=False,
         )
         # Confirmed recently should score higher
         assert scored_confirmed[0]["score"] > scored_stale[0]["score"]
