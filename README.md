@@ -78,7 +78,7 @@ At minimum, you need an LLM provider. Here is an example using OpenRouter:
   },
   "agents": {
     "defaults": {
-      "model": "anthropic/claude-sonnet-4-20250514"
+      "model": "anthropic/claude-haiku-5-5"
     }
   }
 }
@@ -573,7 +573,7 @@ Routing is **disabled by default**. Enable it in your config:
   "agents": {
     "routing": {
       "enabled": true,
-      "classifierModel": "gpt-4o-mini",
+      "classifierModel": "anthropic/claude-haiku-5-5",
       "defaultRole": "general",
       "roles": [
         {

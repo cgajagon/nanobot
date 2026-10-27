@@ -598,7 +598,7 @@ Memory item line format: `- [YYYY-MM-DDTHH:MM] (type, from: source) Summary text
 
 When `micro_extraction_enabled: true`, a lightweight extraction runs after every agent turn:
 
-1. User message + assistant response sent to model (configurable via `micro_extraction_model`, default `gpt-4o-mini`)
+1. User message + assistant response sent to model (configurable via `micro_extraction_model`, default `claude-haiku-5-5`)
 2. Model extracts structured events via `save_events` tool call (simplified schema: type, summary, entities — no triples, salience, confidence, ttl_days, or profile_updates), or returns empty array
 3. Events constructed via `MemoryEvent.from_dict()` directly (**bypasses `EventCoercer`** — no ID generation, no stability classification, no triple coercion)
 4. Provenance stamped with `build_source(channel, tool_hints)`
@@ -676,7 +676,7 @@ All memory parameters live in `MemoryConfig` (`nanobot/config/memory.py`) unless
 | `memory.conflict_auto_resolve_gap` | 0.25 | Min confidence gap for auto-resolving conflicts |
 | `memory.graph_enabled` | false | Enable knowledge graph features |
 | `memory.micro_extraction_enabled` | false | Feature gate for per-turn extraction |
-| `memory.micro_extraction_model` | null (= gpt-4o-mini) | Model for micro-extraction |
+| `memory.micro_extraction_model` | null (= claude-haiku-5-5) | Model for micro-extraction |
 | `memory.raw_turn_ingestion` | true | Enable raw turn ingestion |
 
 ### Reranker Settings (nested: `memory.reranker`)

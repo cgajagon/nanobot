@@ -1,7 +1,7 @@
 """Lightweight per-turn memory extraction.
 
 Extracts structured memory events from individual conversation turns
-using a cheap model (default: gpt-4o-mini). Events flow through the
+using a cheap model (default: claude-haiku-5-5). Events flow through the
 existing EventIngester pipeline for deduplication, embedding, and
 graph ingestion.
 
@@ -158,7 +158,7 @@ class MicroExtractor:
         *,
         provider: LLMProvider,
         ingester: EventIngester,
-        model: str = "gpt-4o-mini",
+        model: str = "anthropic/claude-haiku-5-5",
         enabled: bool = False,
         embedder: Embedder | None = None,
     ) -> None:

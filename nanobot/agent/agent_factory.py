@@ -358,7 +358,7 @@ def build_agent(
         _micro_extractor = _MicroExtractor(
             provider=provider,
             ingester=memory.ingester,
-            model=config.memory.micro_extraction_model or "gpt-4o-mini",
+            model=config.memory.micro_extraction_model or "anthropic/claude-haiku-5-5",
             enabled=True,
             embedder=memory._embedder,
         )

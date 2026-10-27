@@ -24,9 +24,9 @@ class AgentConfig(Base):
 
     # Core
     workspace: str = "~/.nanobot/workspace"
-    model: str = "anthropic/claude-opus-4-5"
+    model: str = "anthropic/claude-haiku-5-5"
     max_tokens: int = 8192
-    temperature: float = 0.1
+    temperature: float = 0.1  # ignored by Claude 5.x models (litellm drops it)
     max_iterations: int = 40
     context_window_tokens: int = 128_000
 
@@ -47,7 +47,7 @@ class AgentConfig(Base):
     tool_result_max_chars: int = 2000
     tool_result_context_tokens: int = 500
     tool_summary_model: str = ""
-    vision_model: str = "gpt-4o-mini"
+    vision_model: str = "anthropic/claude-haiku-5-5"
 
     # Summary/Compression
     summary_model: str | None = None
