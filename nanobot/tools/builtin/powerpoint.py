@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 # Constants & prompts
 # ---------------------------------------------------------------------------
 
-_DEFAULT_VISION_MODEL = "gpt-4o-mini"
+_DEFAULT_VISION_MODEL = "anthropic/claude-haiku-5-5"
 MAX_CONCURRENT = 5
 
 
@@ -487,7 +487,7 @@ class AnalyzePptxTool(Tool):
                     "type": "string",
                     "description": (
                         "Vision-capable LLM model for analysis "
-                        "(default from config or gpt-4o-mini)."
+                        "(default from config or claude-haiku-5-5)."
                     ),
                 },
                 "output_path": {

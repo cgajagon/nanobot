@@ -162,7 +162,7 @@ class RoutingConfig(Base):
     """Multi-agent routing configuration."""
 
     enabled: bool = False  # Feature gate (disabled by default)
-    classifier_model: str | None = None  # Cheap model for classification (e.g. "gpt-4o-mini")
+    classifier_model: str | None = None  # Cheap model for classification (e.g. claude-haiku-5-5)
     roles: list[AgentRoleConfig] = Field(default_factory=list)  # User-defined agent roles
     default_role: str = "general"  # Fallback when classifier is uncertain
     confidence_threshold: float = 0.6  # Below this confidence, fall back to default_role

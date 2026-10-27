@@ -43,7 +43,7 @@ class LiteLLMProvider(LLMProvider):
         self,
         api_key: str | None = None,
         api_base: str | None = None,
-        default_model: str = "anthropic/claude-opus-4-5",
+        default_model: str = "anthropic/claude-haiku-5-5",
         extra_headers: dict[str, str] | None = None,
         provider_name: str | None = None,
         *,

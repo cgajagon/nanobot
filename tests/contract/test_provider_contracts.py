@@ -229,7 +229,7 @@ class TestLiteLLMToolRequestContract:
     litellm's real request path offline via ``mock_response``.
     """
 
-    @pytest.mark.parametrize("model", ["gpt-4o-mini", "anthropic/claude-haiku-4-5"])
+    @pytest.mark.parametrize("model", ["gpt-4o-mini", "anthropic/claude-haiku-5-5"])
     async def test_chat_with_tools_reaches_litellm(
         self, model: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
